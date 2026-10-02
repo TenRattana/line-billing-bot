@@ -1,0 +1,95 @@
+services:
+  app:
+    build: .
+    container_name: line-oa
+    restart: unless-stopped
+
+    ports:
+      - "8500:8500"
+
+    env_file:
+      - .env
+
+    # LINE_CHANNEL_SECRET comes from .env (no mounted secret file: SELinux relabeling
+    # of a file shared by two containers kept locking one of them out).
+    environment:
+      ATTACHMENT_DIR: /data/validated/slips
+      # Unique host name: the external network may carry other projects' "redis".
+      REDIS_URL: redis://line-billing-redis:6379/0
+
+    depends_on:
+      - redis
+
+    volumes:
+      - ./app:/app/app:Z
+      - ./alembic:/app/alembic:Z
+      - ./alembic.ini:/app/alembic.ini:ro,Z
+      # lowercase z = shared SELinux label: backoffice-api reads the same folder
+      - ./data:/data:z
+
+    command:
+      - --reload
+
+  db:
+    image: postgres:16-alpine
+    container_name: line-platform-db
+    restart: unless-stopped
+
+    ports:
+      # Localhost only: the app reaches db over the compose network.
+      - "127.0.0.1:5433:5432"
+
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # Backoffice API: same image and database as the bot, its own process.
+  # No published port: only backoffice-web (nginx) reaches it.
+  backoffice-api:
+    build: .
+    container_name: line-billing-backoffice-api
+    restart: unless-stopped
+    entrypoint: ["uv", "run", "--no-sync", "uvicorn", "backoffice_api.main:app", "--host", "0.0.0.0", "--port", "8600"]
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://line-billing-redis:6379/0
+      ATTACHMENT_DIR: /data/validated/slips  # same path the bot saved into, so stored paths resolve
+    volumes:
+      - ./data:/data:ro,z  # slips, read-only
+    depends_on:
+      - db
+
+  # Backoffice web: the built React app + /api proxy. Open http://<server>:8510
+  backoffice-web:
+    build: ./backoffice/web
+    container_name: line-billing-backoffice-web
+    restart: unless-stopped
+    ports:
+      - "8510:80"
+    depends_on:
+      - backoffice-api
+
+  # HR employee register cached for registration checks. Rebuilt from HR anytime,
+  # so nothing is persisted and no port is published.
+  redis:
+    image: redis:7-alpine
+    container_name: line-billing-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+
+
+volumes:
+  postgres_data:
+      external: true
+      name: line-bot_postgres_data
+
+
+networks:
+  default:
+    name: line-router-net
+    external: true

@@ -1,0 +1,17 @@
+# Secrets are supplied at runtime (env_file + mounted secret), never baked into the image.
+.env
+secret/
+data/
+
+.git
+.venv
+.ruff_cache
+**/__pycache__
+
+# Database dumps: real data, never baked into an image
+*.sql
+backups/
+
+# Backoffice web (built inside its own image)
+backoffice/web/node_modules
+backoffice/web/dist

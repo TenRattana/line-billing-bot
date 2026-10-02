@@ -1,0 +1,27 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+data/
+
+app/mock/**/*.txt
+
+# Secrets
+.env
+secret/
+
+.ruff_cache/
+
+# Backoffice web
+node_modules/
+
+# Database dumps: real employee data and password hashes, never in git
+*.sql
+backups/
