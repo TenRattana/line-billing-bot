@@ -200,8 +200,8 @@ def confirm_screen(customer: dict, invoice: dict, attachments: list[dict]) -> di
                     text(invoice["invoice_no"], size="lg", weight="bold", color=theme.TEXT_PRIMARY),
                     {"type": "separator", "color": theme.BORDER},
                     info_row(label="ยอดค้างชำระ", value=baht(invoice["outstanding"]), emphasis=True),
-                    info_row(label="วันที่บิล", value=invoice["invoice_date"]),
-                    info_row(label="ครบกำหนด", value=invoice["due_date"]),
+                    info_row(label="วันที่บิล", value=fmt_date(invoice["invoice_date"])),
+                    info_row(label="ครบกำหนด", value=fmt_date(invoice["due_date"])),
                 ]
             ),
             summary_card(
@@ -263,6 +263,7 @@ def success_screen(customer: dict, invoice: dict, attachments: list[dict]) -> di
                 ("เลขที่บิล", invoice["invoice_no"]),
                 ("ลูกค้า", customer["customer_name"]),
                 ("ยอดค้างชำระ", baht(invoice["outstanding"]), True),
+                ("ที่อยู่บิล", invoice["province"]),
                 ("ไฟล์แนบ", f"{len(attachments)} ไฟล์"),
             ),
         ],

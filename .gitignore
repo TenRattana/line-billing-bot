@@ -11,8 +11,6 @@ wheels/
 
 data/
 
-app/mock/**/*.txt
-
 # Secrets
 .env
 secret/

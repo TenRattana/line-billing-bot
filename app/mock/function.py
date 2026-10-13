@@ -93,6 +93,7 @@ def load_customers() -> list[dict]:
                 "due_date": row["due_date"].strip(),
                 "currency": row["currency"].strip(),
                 "amount": to_float(row["amount"]),
+                "province": row["province"].strip(),
                 "outstanding": to_float(row["outstanding"]),
                 "outstanding_mst": to_float(
                     row["outstanding_mst"]

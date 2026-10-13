@@ -11,6 +11,7 @@ DATA_FIELDS = [
     "cust_group",
     "sales_group",
     "invoice_no",
+    "province",
     "voucher",
     "doc_type",
     "invoice_date",
@@ -83,6 +84,7 @@ def export_data_txt(input_file: str | Path, output_file: str | Path,) -> None:
 
                     "invoice_no": invoice.get("invoice_no", ""),
                     "voucher": invoice.get("voucher", ""),
+                    "province": invoice.get("province", ""),
                     "doc_type": invoice.get("doc_type", ""),
                     "invoice_date": invoice.get("invoice_date", ""),
                     "due_date": invoice.get("due_date", ""),

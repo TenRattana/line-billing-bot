@@ -394,7 +394,9 @@ async def receive_attachment(
     )
 
     invoice_no = session["invoice"]["invoice_no"]
+    invoice_date = session["invoice"]["invoice_date"]
     customer_id = session["customer"]["customer_code"]
+    province = session["invoice"]["province"]
 
     file_facts = {
         "line_message_id": message_id,
@@ -419,7 +421,9 @@ async def receive_attachment(
         mime_type=content_type,
         filename=filename,
         invoice_id=invoice_no,
+        invoice_date=invoice_date,
         customer_id=customer_id,
+        province=province,
         line_message_id=message_id,
         user_id=user_id,
     )

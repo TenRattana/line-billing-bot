@@ -77,7 +77,9 @@ def save(
     mime_type: str,
     filename: str | None,
     invoice_id: str,
+    invoice_date: str,
     customer_id:str,
+    province:str,
     line_message_id: str,
     user_id: str,
 ) -> dict:
@@ -110,7 +112,9 @@ def save(
         json.dumps(
             {
                 "invoice_id": invoice_id,
+                "invoice_date": invoice_date,
                 "customer_id": customer_id,
+                "province": province,
                 "line_message_id": line_message_id,
                 "user_id": user_id,
                 "original_filename": filename,
