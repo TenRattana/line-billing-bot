@@ -33,9 +33,9 @@ For a local build, `docker compose up --build -d` builds the same images.
 The bot keeps sessions and per-user locks in memory: run it as one uvicorn
 process (the image's default), never with `--workers`.
 
-The `app` container runs `alembic upgrade head` before it starts, so a new image
+The `billing-test-bot` container runs `alembic upgrade head` before it starts, so a new image
 brings its schema changes with it. If a migration fails, the container stops
-instead of serving an old schema; see `docker compose logs app`.
+instead of serving an old schema; see `docker compose logs billing-test-bot`.
 
 Local endpoints:
 
@@ -55,7 +55,7 @@ docker compose exec backoffice-api uv run --no-sync python -m backoffice.api.cre
 Webhook URL: `https://<test-domain>/callback`.
 
 An external Nginx container on `line-router-net` can proxy the bot at
-`http://line-billing-test-app:8500`.
+`http://line-billing-test-bot:8500` (the container name).
 
 The app uses the private alias `line-billing-test-db`, avoiding the production
 `db` alias on the shared network.

@@ -1,7 +1,11 @@
 name: line-billing-test
 
 services:
-  app:
+  # Not "app": Docker adds the service name as an alias on every network, and
+  # production line-oa already answers to "app" on the shared line-router-net.
+  billing-test-bot:
+    # nginx-cloudflare proxies /line-oa-test to this name (http://line-billing-test-bot:8500).
+    container_name: line-billing-test-bot
     # CI builds and pushes the images; the server only pulls them (`docker compose pull && docker compose up -d`).
     image: ${BOT_IMAGE:?set BOT_IMAGE, e.g. ghcr.io/<owner>/line-billing-bot:latest}
     build: .  # local builds only
@@ -21,8 +25,6 @@ services:
     networks:
       default:
       central:
-        aliases:
-          - line-billing-test-app
     # Only data and secrets live on the server; the code is in the image.
     volumes:
       - ./data:/data:z
