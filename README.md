@@ -40,7 +40,7 @@ instead of serving an old schema; see `docker compose logs billing-test-bot`.
 Local endpoints:
 
 - Bot: `http://127.0.0.1:18500`
-- Backoffice: `http://127.0.0.1:18510`
+- Backoffice: `http://<server-ip>:18510` (LAN, login required)
 - PostgreSQL: database `line_billing_test` on `central-db` (manage it in pgAdmin)
 
 An empty test database starts with no rows; the app's migrations create the

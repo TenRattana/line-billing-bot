@@ -199,9 +199,9 @@ location ^~ /line-oa-test {
 | `https://<domain>/line-oa-test/assets/...` | โลโก้ที่ส่งตอนลงทะเบียน |
 | `https://<domain>/line-oa-test/health` | ตรวจว่าบอทเปิดอยู่ |
 
-Backoffice เปิดแค่ที่ `127.0.0.1:18510` ของ server เข้าใช้ผ่าน SSH tunnel
-(`ssh -L 18510:127.0.0.1:18510 <server>` แล้วเปิด `http://localhost:18510`)
-หรือทำ route ใน nginx แยก ถ้าทำ route ให้จำกัด IP และตั้ง `BACKOFFICE_COOKIE_SECURE=true`
+Backoffice เปิดให้เครื่องใน LAN เข้าที่ `http://<IP ของ server>:18510` (แบบเดียวกับ backoffice production ที่ `:8510`)
+ไม่ผ่าน nginx และป้องกันด้วยการ login ของ backoffice อย่างเดียว ถ้าจะเปิดออก internet ผ่าน nginx
+ให้จำกัด IP และตั้ง `BACKOFFICE_COOKIE_SECURE=true` ส่วนการจัดการ DB โดยตรงใช้ pgAdmin (`central-db-ui`)
 
 ---
 
