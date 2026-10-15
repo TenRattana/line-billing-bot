@@ -20,7 +20,7 @@ services:
     environment:
       ATTACHMENT_DIR: /data/validated/slips
       EMPLOYEE_DB_ENV_FILE: /run/secrets/central-db.env
-      TEST_TEXT_COMMANDS_ENABLED: "true"
+      TEST_TEXT_COMMANDS_ENABLED: "false"
     networks:
       default:
       central:  # nginx-cloudflare and central-db
