@@ -195,7 +195,7 @@ def selectable_item(
     index: int,
     title: str,
     subtitle: str,
-    action_data: str,
+    uri: str,
     detail: str | None = None,
 ) -> FlexComponent:
     lines = [
@@ -227,7 +227,7 @@ def selectable_item(
         borderWidth="1px",
         borderColor=theme.BORDER_LIGHT,
         alignItems="center",
-        action={"type": "postback", "data": action_data},
+        action={"type": "uri", "uri": uri},
     )
 
 
@@ -285,8 +285,8 @@ def build_screen(
 
 
 def billing_screen(*, step: int, **kwargs: Any) -> dict:
-    """The 4-step "ส่งบิล" flow screen."""
-    return build_screen(label="ส่งบิล", step=step, total_steps=4, **kwargs)
+    """The 3-step "ส่งบิล" flow: customer (then invoices in LIFF), attachment, confirm/result."""
+    return build_screen(label="ส่งบิล", step=step, total_steps=3, **kwargs)
 
 
 def cancel_button() -> FlexComponent:

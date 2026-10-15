@@ -1,6 +1,6 @@
 """Backoffice API (runs in its own container, next to the bot).
 
-    uvicorn backoffice_api.main:app --port 8600
+    uvicorn backoffice.api.main:app --port 8600
 
 The React app talks to it through nginx at /api; it shares the bot's database
 and models but none of its runtime, so either can restart without the other.
@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from fastapi import Body, Depends, FastAPI, Response
 
 from app.line import api as line_api
-from backoffice_api import auth, bill_files, dashboard, line_routes, tables
+from backoffice.api import auth, bill_files, dashboard, line_routes, tables
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 

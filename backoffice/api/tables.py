@@ -25,7 +25,7 @@ from app.db.models import (
     WebhookEvent,
 )
 from app.db.session import SessionLocal
-from backoffice_api.auth import current_admin, require_admin
+from backoffice.api.auth import current_admin, require_admin
 
 router = APIRouter(prefix="/api/tables")
 

@@ -108,35 +108,62 @@ def save(
         file_path.suffix + ".json"
     )
 
-    metadata_path.write_text(
-        json.dumps(
-            {
-                "invoice_id": invoice_id,
-                "invoice_date": invoice_date,
-                "customer_id": customer_id,
-                "province": province,
-                "line_message_id": line_message_id,
-                "user_id": user_id,
-                "original_filename": filename,
-                "stored_filename": file_path.name,
-                "stored_path": str(file_path),
-                "mime_type": mime_type,
-                "file_size": len(content),
-                "received_at": received_at.isoformat(),
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    try:
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "invoice_id": invoice_id,
+                    "invoice_date": invoice_date,
+                    "customer_id": customer_id,
+                    "province": province,
+                    "line_message_id": line_message_id,
+                    "user_id": user_id,
+                    "original_filename": filename,
+                    "stored_filename": file_path.name,
+                    "stored_path": str(file_path),
+                    "mime_type": mime_type,
+                    "file_size": len(content),
+                    "received_at": received_at.isoformat(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except Exception:
+        file_path.unlink(missing_ok=True)  # no slip without its metadata
+        raise
 
     return {
+        "invoice_no": invoice_id,
         "file_path": str(file_path),
         "metadata_path": str(metadata_path),
         "mime_type": mime_type,
         "original_filename": filename,
         "file_size": len(content),
     }
+
+
+def save_copies(*, invoices: list[dict], customer_id: str, **upload) -> list[dict]:
+    """One upload covering several invoices: a copy per invoice, all or none."""
+    saved = []
+    try:
+        for invoice in invoices:
+            saved.append(
+                save(
+                    invoice_id=invoice["invoice_no"],
+                    invoice_date=invoice["invoice_date"],
+                    province=invoice["province"],
+                    customer_id=customer_id,
+                    **upload,
+                )
+            )
+    except Exception:
+        for attachment in saved:
+            delete(attachment)
+        raise
+
+    return saved
 
 
 def delete(attachment: dict) -> None:

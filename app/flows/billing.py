@@ -9,14 +9,16 @@ from linebot.v3.webhooks import (
     TextMessageContent,
 )
 
-from app import attachments, audit, billing_repository
+from app import audit
 from app.audit import Action
+from app.billing import attachments, receivables
+from app.billing import repository as billing_repository
+from app.billing import session as billing_session
+from app.config import TEST_TEXT_COMMANDS_ENABLED
 from app.flex.screens import billing as screens
 from app.flows import registry
 from app.identity import repository
 from app.line import api as line_api
-from app.mock import function
-from app.session import store
 
 logger = logging.getLogger(__name__)
 
@@ -43,74 +45,78 @@ def _bind_postback_context(node, context: str) -> None:
             _bind_postback_context(child, context)
 
 
-async def _all_choices(session: dict) -> list[dict]:
-    """Everything the current list step may pick from, before any search.
+async def _unsent_customers(emp_code: str) -> list[dict]:
+    """The employee's customers with only invoices not sent yet (and none with nothing left).
 
-    Invoices already sent are hidden (and customers with none left), so a bill
-    is never sent twice and its stored slip never overwritten.
+    So a bill is never sent twice and its stored slip never overwritten.
     """
-    if session["step"] == "customer":
-        customers = function.customers_for(session["emp_code"])
-        sent = await billing_repository.sent_invoice_ids(
-            [invoice["invoice_no"] for customer in customers for invoice in customer["invoices"]]
-        )
+    customers = receivables.customers_for(emp_code)
+    sent = await billing_repository.sent_invoice_ids(
+        [invoice["invoice_no"] for customer in customers for invoice in customer["invoices"]]
+    )
 
-        if not sent:
-            return customers
+    if not sent:
+        return customers
 
-        remaining = (
-            function.with_invoices(c, [i for i in c["invoices"] if i["invoice_no"] not in sent])
-            for c in customers
-        )
-        return [customer for customer in remaining if customer["invoices"]]
-
-    invoices = session["customer"]["invoices"]  # already limited to the employee's group
-    sent = await billing_repository.sent_invoice_ids([invoice["invoice_no"] for invoice in invoices])
-    return [invoice for invoice in invoices if invoice["invoice_no"] not in sent]
+    remaining = (
+        receivables.with_invoices(c, [i for i in c["invoices"] if i["invoice_no"] not in sent]) for c in customers
+    )
+    return [customer for customer in remaining if customer["invoices"]]
 
 
 async def _search(session: dict, query: str) -> list[dict]:
-    fields = ("customer_name", "customer_code") if session["step"] == "customer" else ("invoice_no", "voucher")
     needle = query.casefold()
-    return [item for item in await _all_choices(session) if any(needle in item[f].casefold() for f in fields)]
+    return [
+        customer
+        for customer in await _unsent_customers(session["emp_code"])
+        if needle in customer["customer_name"].casefold() or needle in customer["customer_code"].casefold()
+    ]
 
 
-async def _is_sent(invoice: dict) -> bool:
-    return bool(await billing_repository.sent_invoice_ids([invoice["invoice_no"]]))
+async def _sent_of(invoices: list[dict]) -> set[str]:
+    return await billing_repository.sent_invoice_ids([invoice["invoice_no"] for invoice in invoices])
+
+
+async def _record_per_invoice(action: Action, session: dict, detail: dict) -> None:
+    """Audit rows name one invoice each; a bill of several gets a row per invoice."""
+    for invoice_no in [i["invoice_no"] for i in session["invoices"]] or [None]:
+        await audit.record(
+            action,
+            actor=audit.employee(session["emp_code"]),
+            emp_code=session["emp_code"],
+            invoice_no=invoice_no,
+            detail=detail,
+        )
 
 
 async def _build_current_screen(session: dict) -> dict | None:
-    step, customer, invoice = session["step"], session["customer"], session["invoice"]
+    step, customer, invoices = session["step"], session["customer"], session["invoices"]
 
     if step == "customer":
-        customers = await (_search(session, session["query"]) if session["query"] else _all_choices(session))
-        return screens.customer_screen(customers, page=session["page"], query=session["query"])
+        query = session["query"]
+        customers = await (_search(session, query) if query else _unsent_customers(session["emp_code"]))
+        return screens.customer_screen(customers, page=session["page"], query=query)
 
-    if not customer:
-        return None
-
-    if step == "invoice":
-        invoices = await (_search(session, session["query"]) if session["query"] else _all_choices(session))
-        return screens.invoice_screen(customer, invoices, page=session["page"], query=session["query"])
-
-    if not invoice:
+    if not (customer and invoices):
         return None
 
     if step == "attachment":
-        return screens.attachment_screen(customer, invoice)
+        return screens.attachment_screen(customer, invoices)
 
     if step == "confirm" and session["attachments"]:
-        return screens.confirm_screen(customer, invoice, session["attachments"])
+        return screens.confirm_screen(customer, invoices, session["attachments"])
 
     return None
 
 
-async def _send_current_screen(user_id: str, reply_token: str) -> None:
-    session = store.get_session(user_id)
+async def _send_current_screen(user_id: str, reply_token: str | None) -> None:
+    """Reply to the chat event, or push when there is none (reply_token None)."""
+    session = billing_session.get_session(user_id)
     flex_message = session and await _build_current_screen(session)
 
     if not flex_message:
-        await line_api.reply_text(reply_token, "ไม่สามารถเรียกหน้าปัจจุบันได้ กรุณายกเลิกแล้วเริ่มใหม่")
+        error = "ไม่สามารถเรียกหน้าปัจจุบันได้ กรุณายกเลิกแล้วเริ่มใหม่"
+        await (line_api.reply_text(reply_token, error) if reply_token else line_api.push_text(user_id, error))
         return
 
     # Postbacks carry the screen they came from so stale buttons are rejected.
@@ -126,24 +132,26 @@ async def _send_current_screen(user_id: str, reply_token: str) -> None:
         ),
     )
 
-    await line_api.reply_flex(reply_token, flex_message)
-    store.mark_screen_sent(user_id, screen_id)
+    await (line_api.reply_flex(reply_token, flex_message) if reply_token else line_api.push_flex(user_id, flex_message))
+    billing_session.mark_screen_sent(user_id, screen_id)
 
 
-async def _open_invoice(user_id: str, reply_token: str, session: dict, invoice: dict, *, searched: bool) -> None:
-    store.set_invoice(user_id, invoice)
-    await audit.record(
-        Action.INVOICE_OPENED,
-        actor=audit.employee(session["emp_code"]),
-        emp_code=session["emp_code"],
-        invoice_no=invoice["invoice_no"],
-        detail={
-            "customer_code": session["customer"]["customer_code"],
-            "customer_name": session["customer"]["customer_name"],
-            "via": "search" if searched else "list",
-        },
-    )
+async def _start_new_bill(user_id: str, reply_token: str) -> None:
+    employee = await repository.get_employee_by_line_user_id(user_id)
+    billing_session.new_session(user_id, employee.emp_code)
     await _send_current_screen(user_id, reply_token)
+
+
+async def start_selected(user_id: str, emp_code: str, customer: dict, invoices: list[dict]) -> None:
+    """Invoices picked in LIFF (already checked): a new bill straight at the attachment step, pushed to the chat."""
+    session = billing_session.new_session(user_id, emp_code)  # replaces the bill in progress, like "ส่งบิล"
+    billing_session.set_selection(user_id, customer, invoices)
+    await _record_per_invoice(
+        Action.INVOICE_OPENED,
+        session,
+        {"customer_code": customer["customer_code"], "customer_name": customer["customer_name"], "via": "liff"},
+    )
+    await _send_current_screen(user_id, None)
 
 
 def _billing_postback(action: str):
@@ -155,7 +163,7 @@ def _billing_postback(action: str):
     def decorator(handler):
         @registry.register_postback(action)
         async def wrapper(*, user_id: str, reply_token: str, params: dict) -> None:
-            session = store.get_session(user_id)
+            session = billing_session.get_session(user_id)
 
             if not session or (
                 session["flow_id"],
@@ -167,7 +175,7 @@ def _billing_postback(action: str):
                 params.get("screen_id"),
             ):
                 # A double tap lands on the screen that just replaced this one: ignore it.
-                if session and not store.can_resend_ui(user_id):
+                if session and not billing_session.can_resend_ui(user_id):
                     return
 
                 await line_api.reply_text(
@@ -192,29 +200,27 @@ def _billing_postback(action: str):
 async def send_bill(*, user_id: str, reply_token: str, params: dict) -> None:
     """Always a new bill; the one in progress (if any) is replaced."""
     # Tapping the menu repeatedly would restart and resend the screen each time.
-    if store.get_session(user_id) and not store.can_resend_ui(user_id):
+    if billing_session.get_session(user_id) and not billing_session.can_resend_ui(user_id):
         return
 
-    employee = await repository.get_employee_by_line_user_id(user_id)
-    store.new_session(user_id, employee.emp_code)
-    await _send_current_screen(user_id, reply_token)
+    await _start_new_bill(user_id, reply_token)
 
 
 @registry.register_postback("pending_bills")
 async def pending_bills(*, user_id: str, reply_token: str, params: dict) -> None:
     """เช็คงานค้าง: bring back the screen of the bill in progress."""
-    session = store.get_session(user_id)
+    session = billing_session.get_session(user_id)
 
     if not session:
         await line_api.reply_text(reply_token, "ไม่มีงานค้าง กด \"ส่งบิล\" ที่เมนูเพื่อเริ่มส่งบิล")
         return
 
-    if not store.can_resend_ui(user_id):
+    if not billing_session.can_resend_ui(user_id):
         return
 
     # A session whose screen can't be rebuilt would leave the user without buttons.
     if not await _build_current_screen(session):
-        store.clear_session(user_id)
+        billing_session.clear_session(user_id)
         await line_api.reply_text(reply_token, "งานที่ค้างไว้ใช้ต่อไม่ได้แล้ว กด \"ส่งบิล\" ที่เมนูเพื่อเริ่มใหม่")
         return
 
@@ -242,99 +248,71 @@ async def change_page(user_id: str, reply_token: str, params: dict, session: dic
     page = params.get("page", "")
 
     if page.isdigit():  # the screen clamps it to the last page
-        store.update(user_id, page=int(page))
+        billing_session.update(user_id, page=int(page))
 
     await _send_current_screen(user_id, reply_token)
 
 
 @_billing_postback("clear_search")
 async def clear_search(user_id: str, reply_token: str, params: dict, session: dict) -> None:
-    store.update(user_id, query="", page=0)
-    await _send_current_screen(user_id, reply_token)
-
-
-@_billing_postback("select_customer")
-async def select_customer(user_id: str, reply_token: str, params: dict, session: dict) -> None:
-    code = params.get("customer_code")
-    customer = next((c for c in await _all_choices(session) if c["customer_code"] == code), None)
-
-    if not customer:  # not in this employee's group, or nothing left to send
-        await line_api.reply_text(reply_token, "ไม่พบลูกค้ารายนี้ในกลุ่มของคุณ หรือส่งบิลครบแล้ว")
-        return
-
-    store.set_customer(user_id, customer)
+    billing_session.update(user_id, query="", page=0)
     await _send_current_screen(user_id, reply_token)
 
 
 @_billing_postback("change_customer")
 async def change_customer(user_id: str, reply_token: str, params: dict, session: dict) -> None:
-    store.reset_customer(user_id)
-    await _send_current_screen(user_id, reply_token)
-
-
-@_billing_postback("select_invoice")
-async def select_invoice(user_id: str, reply_token: str, params: dict, session: dict) -> None:
-    number = params.get("invoice_no")
-    invoice = next((i for i in await _all_choices(session) if i["invoice_no"] == number), None)
-
-    if not invoice:
-        await line_api.reply_text(reply_token, "ไม่พบบิลนี้ของลูกค้ารายนี้ หรือบิลนี้ส่งไปแล้ว")
-        return
-
-    await _open_invoice(user_id, reply_token, session, invoice, searched=False)
-
-
-@_billing_postback("back_to_invoices")
-async def back_to_invoices(user_id: str, reply_token: str, params: dict, session: dict) -> None:
-    store.set_customer(user_id, session["customer"])
+    """"Back" from any step: pick a customer again (the files of the dropped bill are deleted)."""
+    billing_session.reset_customer(user_id)
     await _send_current_screen(user_id, reply_token)
 
 
 @_billing_postback("confirm_send")
 async def confirm_send(user_id: str, reply_token: str, params: dict, session: dict) -> None:
-    customer, invoice = session["customer"], session["invoice"]
+    customer, invoices = session["customer"], session["invoices"]
     attached = session["attachments"]
 
-    if not (customer and invoice and attached):
+    if not (customer and invoices and attached):
         await line_api.reply_text(reply_token, "ไม่พบบิลที่ต้องการส่ง")
         return
 
-    if await _is_sent(invoice):  # sent meanwhile (e.g. from another device): don't record it twice
-        store.clear_session(user_id, keep_files=True)  # same path as the sent slip
-        await line_api.reply_text(reply_token, "บิลนี้ถูกส่งไปแล้ว ไม่ได้ส่งซ้ำ")
+    sent = await _sent_of(invoices)
+    if sent:  # sent meanwhile (e.g. from another device): don't record it twice
+        for attachment in attached:  # a sent invoice's copy has the same path as its sent slip
+            if attachment["invoice_no"] not in sent:
+                attachments.delete(attachment)
+        billing_session.clear_session(user_id, keep_files=True)
+        await line_api.reply_text(reply_token, f"บิล {', '.join(sorted(sent))} ถูกส่งไปแล้ว ไม่ได้ส่งซ้ำ")
         return
 
     # TODO: เปลี่ยน block นี้เป็น mail service จริงในขั้นถัดไป
     logger.info(
         "SEND INVOICE (%s / %s): %s",
-        invoice["invoice_no"],
+        [invoice["invoice_no"] for invoice in invoices],
         customer["customer_code"],
         [attachment["file_path"] for attachment in attached],
     )
 
-    # Recorded (with its audit row) before replying, so the user never sees
+    # Recorded (with its audit rows) before replying, so the user never sees
     # success for an unsaved send.
     await billing_repository.record_send(
         emp_code=session["emp_code"],
         customer=customer,
-        invoice=invoice,
+        invoices=invoices,
         attachments=attached,
     )
 
-    store.clear_session(user_id, keep_files=True)
-    await line_api.reply_flex(reply_token, screens.success_screen(customer, invoice, attached))
+    billing_session.clear_session(user_id, keep_files=True)
+    await line_api.reply_flex(reply_token, screens.success_screen(customer, invoices, attached))
 
 
 @_billing_postback("cancel_send")
 async def cancel_send(user_id: str, reply_token: str, params: dict, session: dict) -> None:
-    await audit.record(
+    await _record_per_invoice(
         Action.INVOICE_CANCELLED,
-        actor=audit.employee(session["emp_code"]),
-        emp_code=session["emp_code"],
-        invoice_no=session["invoice"]["invoice_no"] if session["invoice"] else None,
-        detail={"step": session["step"], "files": len(session["attachments"])},
+        session,
+        {"step": session["step"], "files": len(session["attachments"])},
     )
-    store.clear_session(user_id)
+    billing_session.clear_session(user_id)
     await line_api.reply_text(reply_token, "ยกเลิกการส่งบิลแล้ว")
 
 
@@ -350,7 +328,7 @@ async def receive_attachment(
     reply_token: str,
     message: ImageMessageContent | FileMessageContent,
 ) -> None:
-    session = store.get_session(user_id)
+    session = billing_session.get_session(user_id)
 
     if not session:
         await line_api.reply_text(reply_token, "ยังไม่มีรายการส่งบิล กด \"ส่งบิล\" ที่เมนูเพื่อเริ่ม")
@@ -362,12 +340,10 @@ async def receive_attachment(
 
     # File events state their size, so skip downloading oversized files.
     if getattr(message, "file_size", 0) > attachments.MAX_FILE_SIZE:
-        await audit.record(
+        await _record_per_invoice(
             Action.FILE_REJECTED,
-            actor=audit.employee(session["emp_code"]),
-            emp_code=session["emp_code"],
-            invoice_no=session["invoice"]["invoice_no"],
-            detail={
+            session,
+            {
                 "line_message_id": message.id,
                 "original_filename": getattr(message, "file_name", None),
                 "file_size": message.file_size,
@@ -377,9 +353,12 @@ async def receive_attachment(
         await line_api.reply_text(reply_token, attachments.TOO_LARGE_ERROR)
         return
 
-    if await _is_sent(session["invoice"]):  # sent meanwhile: its stored slip must not be overwritten
-        store.clear_session(user_id)
-        await line_api.reply_text(reply_token, "บิลนี้ถูกส่งไปแล้ว กด \"ส่งบิล\" ที่เมนูเพื่อเลือกบิลอื่น")
+    sent = await _sent_of(session["invoices"])
+    if sent:  # sent meanwhile: its stored slip must not be overwritten
+        billing_session.clear_session(user_id)
+        await line_api.reply_text(
+            reply_token, f"บิล {', '.join(sorted(sent))} ถูกส่งไปแล้ว กด \"ส่งบิล\" ที่เมนูเพื่อเลือกบิลอื่น"
+        )
         return
 
     message_id = message.id
@@ -393,11 +372,6 @@ async def receive_attachment(
         file_size=len(content),
     )
 
-    invoice_no = session["invoice"]["invoice_no"]
-    invoice_date = session["invoice"]["invoice_date"]
-    customer_id = session["customer"]["customer_code"]
-    province = session["invoice"]["province"]
-
     file_facts = {
         "line_message_id": message_id,
         "original_filename": filename,
@@ -406,35 +380,28 @@ async def receive_attachment(
     }
 
     if error:
-        await audit.record(
-            Action.FILE_REJECTED,
-            actor=audit.employee(session["emp_code"]),
-            emp_code=session["emp_code"],
-            invoice_no=invoice_no,
-            detail={**file_facts, "reason": error},
-        )
+        await _record_per_invoice(Action.FILE_REJECTED, session, {**file_facts, "reason": error})
         await line_api.reply_text(reply_token, error)
         return
 
-    attachment = attachments.save(
+    saved = attachments.save_copies(
+        invoices=session["invoices"],
+        customer_id=session["customer"]["customer_code"],
         content=content,
         mime_type=content_type,
         filename=filename,
-        invoice_id=invoice_no,
-        invoice_date=invoice_date,
-        customer_id=customer_id,
-        province=province,
         line_message_id=message_id,
         user_id=user_id,
     )
-    await audit.record(
-        Action.FILE_UPLOADED,
-        actor=audit.employee(session["emp_code"]),
-        emp_code=session["emp_code"],
-        invoice_no=invoice_no,
-        detail={**file_facts, "stored_path": attachment["file_path"]},
-    )
-    store.add_attachment(user_id, attachment)
+    for attachment in saved:
+        await audit.record(
+            Action.FILE_UPLOADED,
+            actor=audit.employee(session["emp_code"]),
+            emp_code=session["emp_code"],
+            invoice_no=attachment["invoice_no"],
+            detail={**file_facts, "stored_path": attachment["file_path"]},
+        )
+    billing_session.add_attachments(user_id, saved)
 
     await _send_current_screen(user_id, reply_token)
 
@@ -446,14 +413,18 @@ async def receive_attachment(
 
 @registry.register_message("text")
 async def receive_text(*, user_id: str, reply_token: str, message: TextMessageContent) -> None:
-    """On the customer / invoice list, typed text searches it (name, code or invoice number).
+    """On the customer list, typed text searches it (name or code).
 
-    One match is picked right away; several narrow the list; none keeps the screen as it was.
+    Matches narrow the list (a customer is opened in LIFF by tapping it); none keeps the screen as it was.
     """
-    session = store.get_session(user_id)
+    session = billing_session.get_session(user_id)
     query = message.text.strip()
 
-    if not session or session["step"] not in ("customer", "invoice") or not query:
+    if TEST_TEXT_COMMANDS_ENABLED and query == "ส่งบิล":
+        await _start_new_bill(user_id, reply_token)
+        return
+
+    if not session or session["step"] != "customer" or not query:
         return
 
     if len(query) > TYPED_MAX:
@@ -463,16 +434,8 @@ async def receive_text(*, user_id: str, reply_token: str, message: TextMessageCo
     matches = await _search(session, query)  # always the whole list, not inside an earlier search
 
     if not matches:
-        what = "ลูกค้า" if session["step"] == "customer" else "บิล"
-        await line_api.reply_text(reply_token, f"ไม่พบ{what}ที่ตรงกับ \"{query}\" ลองพิมพ์ใหม่อีกครั้ง")
+        await line_api.reply_text(reply_token, f"ไม่พบลูกค้าที่ตรงกับ \"{query}\" ลองพิมพ์ใหม่อีกครั้ง")
         return
 
-    if len(matches) > 1:
-        store.update(user_id, query=query, page=0)
-    elif session["step"] == "customer":
-        store.set_customer(user_id, matches[0])
-    else:
-        await _open_invoice(user_id, reply_token, session, matches[0], searched=True)
-        return
-
+    billing_session.update(user_id, query=query, page=0)
     await _send_current_screen(user_id, reply_token)

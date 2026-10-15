@@ -1,6 +1,6 @@
 """Create or reset a backoffice account.
 
-    uv run --no-sync python -m backoffice_api.create_admin <username> [admin|viewer]
+    uv run --no-sync python -m backoffice.api.create_admin <username> [admin|viewer]
 
 Asks for the password (not echoed). Running it again for an existing username
 resets that account's password and role and re-enables it.
@@ -14,7 +14,7 @@ from sqlalchemy import select
 
 from app.db.models.admin_user import AdminUser
 from app.db.session import SessionLocal
-from backoffice_api.auth import hash_password
+from backoffice.api.auth import hash_password
 
 MIN_PASSWORD = 10
 

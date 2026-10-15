@@ -2,11 +2,11 @@ import time
 import uuid
 from typing import Any
 
-from app import attachments
+from app.billing import attachments
 
 UI_RESEND_COOLDOWN_SECONDS = 5.0
 
-# Steps: customer -> invoice -> attachment -> confirm
+# Steps: customer -> (invoices picked in LIFF) -> attachment -> confirm
 _sessions: dict[str, dict[str, Any]] = {}
 
 
@@ -25,9 +25,9 @@ def new_session(user_id: str, emp_code: str) -> dict[str, Any]:
         "screen_id": None,
         "step": "customer",
         "customer": None,
-        "invoice": None,
+        "invoices": [],  # one, or several covered by the same upload
         "attachments": [],
-        # The customer / invoice list on display: typed search text and page number.
+        # The customer list on display: typed search text and page number.
         "query": "",
         "page": 0,
         "last_ui_sent_at": 0.0,
@@ -49,23 +49,19 @@ def update(user_id: str, **fields: Any) -> None:
 
 def reset_customer(user_id: str) -> None:
     _discard_files(user_id)
-    update(user_id, customer=None, invoice=None, attachments=[], query="", page=0, step="customer")
+    update(user_id, customer=None, invoices=[], attachments=[], query="", page=0, step="customer")
 
 
-def set_customer(user_id: str, customer: dict) -> None:
+def set_selection(user_id: str, customer: dict, invoices: list[dict]) -> None:
     _discard_files(user_id)
-    update(user_id, customer=customer, invoice=None, attachments=[], query="", page=0, step="invoice")
+    update(user_id, customer=customer, invoices=invoices, attachments=[], step="attachment")
 
 
-def set_invoice(user_id: str, invoice: dict) -> None:
-    _discard_files(user_id)
-    update(user_id, invoice=invoice, attachments=[], step="attachment")
-
-
-def add_attachment(user_id: str, attachment: dict) -> None:
+def add_attachments(user_id: str, saved: list[dict]) -> None:
+    """One upload: its copy for each invoice of the bill."""
     session = _sessions.get(user_id)
     if session:
-        update(user_id, attachments=[*session["attachments"], attachment], step="confirm")
+        update(user_id, attachments=[*session["attachments"], *saved], step="confirm")
 
 
 def mark_screen_sent(user_id: str, screen_id: str) -> None:

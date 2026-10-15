@@ -4,7 +4,9 @@ secret/
 data/
 
 .git
+.github
 .venv
+.venv-linux
 .ruff_cache
 **/__pycache__
 
@@ -12,6 +14,7 @@ data/
 *.sql
 backups/
 
-# Backoffice web (built inside its own image)
-backoffice/web/node_modules
-backoffice/web/dist
+# Not needed at runtime: the backoffice web has its own image, docs and CI config stay out
+backoffice/web/
+*.md
+compose.yaml

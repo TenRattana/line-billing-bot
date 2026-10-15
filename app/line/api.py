@@ -13,6 +13,7 @@ from linebot.v3.messaging import (
     Configuration,
     FlexMessage,
     ImageMessage,
+    PushMessageRequest,
     ReplyMessageRequest,
     TextMessage,
     UserProfileResponse,
@@ -100,6 +101,17 @@ async def reply_flex(reply_token: str, flex_message: dict) -> None:
     await (await messaging()).reply_message(
         ReplyMessageRequest(reply_token=reply_token, messages=[FlexMessage.from_dict(flex_message)])
     )
+
+async def push_text(user_id: str, text: str) -> None:
+    await (await messaging()).push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text=text)]))
+
+
+async def push_flex(user_id: str, flex_message: dict) -> None:
+    """For screens not answering a chat event (e.g. a LIFF action): no reply token."""
+    await (await messaging()).push_message(
+        PushMessageRequest(to=user_id, messages=[FlexMessage.from_dict(flex_message)])
+    )
+
 
 async def reply_text_and_image(
     reply_token: str,

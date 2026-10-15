@@ -6,10 +6,10 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
-from app.attachments import ATTACHMENT_DIR
+from app.billing.attachments import ATTACHMENT_DIR
 from app.db.models import BillSend
 from app.db.session import SessionLocal
-from backoffice_api.auth import current_admin
+from backoffice.api.auth import current_admin
 
 router = APIRouter(prefix="/api/bill_sends")
 

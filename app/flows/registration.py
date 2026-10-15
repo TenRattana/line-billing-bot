@@ -1,11 +1,12 @@
 """Registration: employee code -> full name -> confirm -> save.
 
-The code and name are checked against the employee directory (HR via Redis,
-see app/identity/directory.py) before anything is shown or saved, so knowing
-a code alone reveals nothing. The saved name/department come from HR.
+The code and name are checked against the central employees table before
+anything is shown or saved, so knowing a code alone reveals nothing. The saved
+name and department come from that table.
 """
 
 from app import audit
+from app.config import PUBLIC_BASE_URL
 from app.audit import Action
 from app.flex.screens import registration as registration_screen
 from app.flows import registry
@@ -24,7 +25,6 @@ NAME_ATTEMPTS_MAX = 3
 
 _REGISTER_FAILURES = {
     "already_registered": "บัญชี LINE นี้ลงทะเบียนแล้ว",
-    "employee_inactive": "บัญชีพนักงานนี้ไม่สามารถใช้งานได้",
     "line_already_registered": "บัญชี LINE นี้ถูกลงทะเบียนกับพนักงานคนอื่นแล้ว",
     "employee_already_registered": "รหัสพนักงานนี้ถูกลงทะเบียนกับบัญชี LINE อื่นแล้ว",
 }
@@ -86,7 +86,7 @@ async def start_registration(
     await line_api.reply_text_and_image(
         reply_token,
         text,
-        "https://aikerrykfm.com/line-oa/assets/img/KFM_Logo.png",
+        f"{PUBLIC_BASE_URL}/assets/img/KFM_Logo.png",
     )
 
 @registry.register_postback("start_registration")
@@ -120,19 +120,12 @@ async def _receive_code(line_user_id: str, reply_token: str, code: str) -> None:
         return
 
     code = directory.normalize_code(code)
-    verdict, _ = await directory.lookup(code)
+    verdict, person = await directory.lookup(code)
 
     if verdict is not Verdict.OK:
         if verdict is Verdict.NOT_FOUND:  # UNAVAILABLE is an outage, not the user's doing
             await _rejected(line_user_id, "code_not_found", code=code)
         await line_api.reply_text(reply_token, _rejection(verdict, code))
-        return
-
-    employee = await repository.get_employee_by_code(code)
-
-    if employee is not None and not employee.active:
-        await _rejected(line_user_id, "employee_inactive", code=code, emp_code=code)
-        await line_api.reply_text(reply_token, _REGISTER_FAILURES["employee_inactive"])
         return
 
     # One code, one LINE account.
@@ -144,7 +137,8 @@ async def _receive_code(line_user_id: str, reply_token: str, code: str) -> None:
         )
         return
 
-    registration_store.update(line_user_id, step="full_name", emp_code=code, name_attempts=0)
+    # The name step checks against this result: no second lookup.
+    registration_store.update(line_user_id, step="full_name", emp_code=code, person=person, name_attempts=0)
     await line_api.reply_text(reply_token, "กรุณาพิมพ์ชื่อ-นามสกุลของคุณ")
 
 
@@ -153,15 +147,9 @@ async def _receive_name(line_user_id: str, reply_token: str, registration: dict,
         await line_api.reply_text(reply_token, f"ชื่อยาวเกิน {FULL_NAME_MAX} ตัวอักษร")
         return
 
-    code = registration["emp_code"]
-    verdict, person = await directory.verify(code, full_name)
+    code, person = registration["emp_code"], registration["person"]
 
-    if verdict is Verdict.UNAVAILABLE:
-        # Stay on this step; the user can retype once the directory is back.
-        await line_api.reply_text(reply_token, _rejection(verdict, code))
-        return
-
-    if verdict is not Verdict.OK:
+    if not directory.name_matches(person, full_name):
         # Limited attempts, or anyone could keep guessing the name behind a code.
         attempts = registration["name_attempts"] + 1
         await _rejected(
@@ -177,19 +165,19 @@ async def _receive_name(line_user_id: str, reply_token: str, registration: dict,
             registration_store.update(line_user_id, name_attempts=attempts)
             await line_api.reply_text(
                 reply_token,
-                f"{_rejection(verdict, code)}\n\nพิมพ์ชื่อ-นามสกุลอีกครั้ง (เหลืออีก {NAME_ATTEMPTS_MAX - attempts} ครั้ง)",
+                f"{_rejection(Verdict.NAME_MISMATCH, code)}\n\nพิมพ์ชื่อ-นามสกุลอีกครั้ง (เหลืออีก {NAME_ATTEMPTS_MAX - attempts} ครั้ง)",
             )
             return
 
-        registration_store.update(line_user_id, step="employee_code", emp_code=None, name_attempts=0)
+        registration_store.update(line_user_id, step="employee_code", emp_code=None, person=None, name_attempts=0)
         await line_api.reply_text(
             reply_token,
-            f"{_rejection(verdict, code)}\n\nพิมพ์ผิดครบ {NAME_ATTEMPTS_MAX} ครั้งแล้ว "
+            f"{_rejection(Verdict.NAME_MISMATCH, code)}\n\nพิมพ์ผิดครบ {NAME_ATTEMPTS_MAX} ครั้งแล้ว "
             "เริ่มใหม่ กรุณากรอกรหัสพนักงาน",
         )
         return
 
-    registration_store.update(line_user_id, step="confirm", person=person)
+    registration_store.update(line_user_id, step="confirm")
 
     await line_api.reply_flex(
         reply_token,

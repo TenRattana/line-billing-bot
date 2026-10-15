@@ -14,7 +14,7 @@ def start_registration(
     registration = _registrations[line_user_id] = {
         "step": "employee_code",
         "emp_code": None,
-        "person": None,  # verified directory data, saved on confirm
+        "person": None,  # directory data from the code step; the name is checked against it, saved on confirm
         "name_attempts": 0,
         "display_name": display_name,
         "picture_url": picture_url,

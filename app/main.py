@@ -1,17 +1,16 @@
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from app.jobs.update_mock import update_data
+from app.billing import receivables
+from app.config import LIFF_ALLOWED_ORIGIN, LINE_RICH_MENU_SETUP_ENABLED
 from app.identity import directory, repository
 from app.line import api as line_api
 from app.line import richmenu
 from app.routes.line import router as line_router
-
-from app.jobs.scheduler import start_scheduler, scheduler
-from app.jobs.update_mock import update_data
+from app.routes import liff
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,44 +22,22 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    try:
-        await richmenu.setup(
-            await repository.list_registered_line_user_ids()
-        )
-    except Exception:
-        logger.exception("Rich menu setup failed")
+    # Off until a new LINE channel is verified: setup replaces menus and relinks every user.
+    if LINE_RICH_MENU_SETUP_ENABLED:
+        try:
+            await richmenu.setup(await repository.list_registered_line_user_ids())
+        except Exception:
+            logger.exception("Rich menu setup failed")
 
-    sync_task = (
-        asyncio.create_task(directory.loop())
-        if directory.enabled()
-        else None
-    )
-
-    # สร้าง/โหลดข้อมูลทันทีตอนเปิดระบบ
-    try:
-        update_data()
-        logger.info("Initial data update completed")
-    except Exception:
-        logger.exception("Initial data update failed")
-
-    # จากนั้นตั้งให้อัปเดตทุกวัน 18:30
-    start_scheduler()
-    logger.info("Scheduler started")
+    receivables.start_daily_reload()  # the first load happens at import
 
     yield
 
-    # -------------------------
-    # Shutdown
-    # -------------------------
-
-    if scheduler.running:
-        scheduler.shutdown(wait=False)
-
-    if sync_task:
-        sync_task.cancel()
+    receivables.stop_daily_reload()
 
     await directory.close()
     await line_api.close()
+    await liff.close()
 
 
 app = FastAPI(
@@ -68,6 +45,14 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+if LIFF_ALLOWED_ORIGIN:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[LIFF_ALLOWED_ORIGIN],
+        allow_methods=["GET", "POST"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
 
 
 app.mount(
@@ -78,6 +63,7 @@ app.mount(
 
 
 app.include_router(line_router)
+app.include_router(liff.router)
 
 
 @app.get("/health")
@@ -86,9 +72,3 @@ async def health():
         "status": "ok",
         "service": "line-billing-bot",
     }
-
-
-@app.post("/internal/update-mock", include_in_schema=False)
-async def update_mock_now():
-    update_data()
-    return {"ok": True}

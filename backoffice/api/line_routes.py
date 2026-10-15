@@ -9,7 +9,7 @@ from linebot.v3 import insight
 from app.identity import repository
 from app.line import api as line_api
 from app.line import richmenu
-from backoffice_api.auth import current_admin, require_admin
+from backoffice.api.auth import current_admin, require_admin
 
 router = APIRouter(prefix="/api/line")
 

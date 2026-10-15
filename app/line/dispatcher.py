@@ -35,7 +35,7 @@ _REGISTRATION_ACTIONS = {
 }
 
 
-def _get_user_lock(user_id: str) -> asyncio.Lock:
+def user_lock(user_id: str) -> asyncio.Lock:
     lock = _user_locks.get(user_id)
 
     if lock is None:
@@ -63,7 +63,7 @@ async def dispatch_event(event: Event) -> bool:
     ):
         return False
 
-    async with _get_user_lock(user_id):
+    async with user_lock(user_id):
         employee = await repository.get_employee_by_line_user_id(user_id)
 
         if employee is None:

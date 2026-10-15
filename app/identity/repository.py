@@ -10,13 +10,6 @@ from app.db.session import SessionLocal
 PROVIDER = "line"
 
 
-async def get_employee_by_code(
-    emp_code: str,
-) -> Employee | None:
-    async with SessionLocal() as session:
-        return await session.get(Employee, emp_code.strip())
-
-
 async def get_line_identity(
     line_user_id: str,
 ) -> tuple[Employee, UserIdentity] | None:
@@ -100,7 +93,7 @@ async def register_line_identity(
     display_name: str | None = None,
     picture_url: str | None = None,
 ) -> tuple[str, Employee | None]:
-    """Save the verified employee (HR data wins over what's stored) and bind LINE to it."""
+    """Copy the verified directory employee locally and bind LINE to it."""
     line_user_id = line_user_id.strip()
     emp_code = emp_code.strip()
 
@@ -110,13 +103,14 @@ async def register_line_identity(
         if employee is None:
             employee = Employee(emp_code=emp_code, active=True)
             session.add(employee)
-        elif not employee.active:
-            return "employee_inactive", employee
 
         employee.emp_fn = person["fn"]
         employee.emp_ln = person["ln"]
         employee.emp_full = person["name"]
         employee.emp_department = person["department"]
+        employee.emp_email = person.get("email")
+        employee.emp_phone = person.get("phone")
+        employee.active = True
 
         # Bindings switched off by hand (active=false) count as released;
         # clear them so the unique (provider, code / LINE id) keys don't block this one.

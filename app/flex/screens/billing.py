@@ -1,7 +1,9 @@
 import math
 from datetime import datetime
+from urllib.parse import urlencode
 
-from app import attachments as attachment_files
+from app.billing import attachments as attachment_files
+from app.config import BILLING_LIFF_URL
 from app.flex import theme
 from app.flex.components import (
     baht,
@@ -72,7 +74,7 @@ def customer_screen(customers: list[dict], *, page: int, query: str) -> dict:
                     title=customer["customer_name"],
                     subtitle=customer["customer_code"],
                     detail=f"ยอด {baht(customer['total_outstanding'])} · {customer['invoice_count']} บิล",
-                    action_data=f"action=select_customer&customer_code={customer['customer_code']}",
+                    uri=f"{BILLING_LIFF_URL.rstrip('/')}/?{urlencode({'customer_code': customer['customer_code']})}",
                 )
                 for index, customer in enumerate(rows, start=first)
             ],
@@ -83,50 +85,30 @@ def customer_screen(customers: list[dict], *, page: int, query: str) -> dict:
     )
 
 
-def invoice_screen(customer: dict, invoices: list[dict], *, page: int, query: str) -> dict:
-    rows, first, buttons, note = _paged(invoices, page, query, "เลขบิล")
-
-    return billing_screen(
-        step=2,
-        alt_text=f"เลือกบิลของ {customer['customer_name']}",
-        title="เลือกใบแจ้งหนี้",
-        subtitle=f"{customer['customer_name']} · {len(invoices):,} บิล",
-        contents=_rows_or_empty(
-            [
-                selectable_item(
-                    index=index,
-                    title=invoice["invoice_no"],
-                    subtitle=baht(invoice["outstanding"]),
-                    detail=(
-                        f"วันออกบิล {fmt_date(invoice.get('invoice_date'))} "
-                        f"ครบกำหนด {fmt_date(invoice.get('due_date'))}"
-                    ),
-                    action_data=f"action=select_invoice&invoice_no={invoice['invoice_no']}",
-                )
-                for index, invoice in enumerate(rows, start=first)
-            ],
-            "ไม่มีบิลของลูกค้ารายนี้",
-        ),
-        footer=[
-            *buttons,
-            secondary_button(label="← เปลี่ยนลูกค้า", data="action=change_customer"),
-            cancel_button(),
-        ],
-        footer_note=note,
-    )
+def _invoice_nos(invoices: list[dict]) -> str:
+    return ", ".join(invoice["invoice_no"] for invoice in invoices)
 
 
-def attachment_screen(customer: dict, invoice: dict) -> dict:
+def _total(invoices: list[dict]) -> float:
+    return sum(invoice["outstanding"] for invoice in invoices)
+
+
+def _uploads(invoices: list[dict], attachments: list[dict]) -> list[dict]:
+    """Each upload is saved once per invoice; show it once (the first invoice's copy)."""
+    return [a for a in attachments if a["invoice_no"] == invoices[0]["invoice_no"]]
+
+
+def attachment_screen(customer: dict, invoices: list[dict]) -> dict:
     message = billing_screen(
-        step=3,
-        alt_text=f"แนบไฟล์สำหรับ {invoice['invoice_no']}",
+        step=2,
+        alt_text=f"แนบไฟล์สำหรับ {_invoice_nos(invoices)}",
         title="แนบไฟล์สลิป",
         subtitle="ส่งรูปหรือไฟล์ที่ต้องการแนบกับใบแจ้งหนี้",
         contents=[
             info_card(
-                ("เลขที่บิล", invoice["invoice_no"]),
+                ("เลขที่บิล", _invoice_nos(invoices)),
                 ("ลูกค้า", customer["customer_name"]),
-                ("ยอดค้างชำระ", baht(invoice["outstanding"]), True),
+                ("ยอดค้างชำระ", baht(_total(invoices)), True),
             ),
             box(
                 "vertical",
@@ -144,7 +126,7 @@ def attachment_screen(customer: dict, invoice: dict) -> dict:
             ),
         ],
         footer=[
-            secondary_button(label="← เลือกบิลใหม่", data="action=back_to_invoices"),
+            secondary_button(label="← เลือกลูกค้าใหม่", data="action=change_customer"),
             cancel_button(),
         ],
         footer_note="เมื่อรับไฟล์เรียบร้อย ระบบจะพาไปขั้นตอนยืนยันอัตโนมัติ",
@@ -188,22 +170,39 @@ def _attachment_row(attachment: dict, index: int) -> dict:
     )
 
 
-def confirm_screen(customer: dict, invoice: dict, attachments: list[dict]) -> dict:
+def _invoices_card(invoices: list[dict]) -> dict:
+    if len(invoices) == 1:
+        invoice = invoices[0]
+        return summary_card(
+            [
+                text(invoice["invoice_no"], size="lg", weight="bold", color=theme.TEXT_PRIMARY),
+                {"type": "separator", "color": theme.BORDER},
+                info_row(label="ยอดค้างชำระ", value=baht(invoice["outstanding"]), emphasis=True),
+                info_row(label="วันที่บิล", value=fmt_date(invoice["invoice_date"])),
+                info_row(label="ครบกำหนด", value=fmt_date(invoice["due_date"])),
+            ]
+        )
+
+    return summary_card(
+        [
+            text(f"{len(invoices)} บิล", size="lg", weight="bold", color=theme.TEXT_PRIMARY),
+            {"type": "separator", "color": theme.BORDER},
+            *(info_row(label=invoice["invoice_no"], value=baht(invoice["outstanding"])) for invoice in invoices),
+            info_row(label="ยอดรวม", value=baht(_total(invoices)), emphasis=True),
+        ]
+    )
+
+
+def confirm_screen(customer: dict, invoices: list[dict], attachments: list[dict]) -> dict:
+    uploads = _uploads(invoices, attachments)
+
     return billing_screen(
-        step=4,
-        alt_text=f"ยืนยันส่งบิล {invoice['invoice_no']}",
+        step=3,
+        alt_text=f"ยืนยันส่งบิล {_invoice_nos(invoices)}",
         title="ตรวจสอบและยืนยัน",
         subtitle="ตรวจสอบข้อมูลและไฟล์แนบก่อนส่งใบแจ้งหนี้",
         contents=[
-            summary_card(
-                [
-                    text(invoice["invoice_no"], size="lg", weight="bold", color=theme.TEXT_PRIMARY),
-                    {"type": "separator", "color": theme.BORDER},
-                    info_row(label="ยอดค้างชำระ", value=baht(invoice["outstanding"]), emphasis=True),
-                    info_row(label="วันที่บิล", value=fmt_date(invoice["invoice_date"])),
-                    info_row(label="ครบกำหนด", value=fmt_date(invoice["due_date"])),
-                ]
-            ),
+            _invoices_card(invoices),
             summary_card(
                 [
                     section_title("ข้อมูลผู้รับ"),
@@ -216,7 +215,7 @@ def confirm_screen(customer: dict, invoice: dict, attachments: list[dict]) -> di
                     title_row(
                         text("ไฟล์แนบ", size="sm", weight="bold", color=theme.TEXT_PRIMARY, flex=1),
                         text(
-                            f"{len(attachments)} ไฟล์",
+                            f"{len(uploads)} ไฟล์",
                             size="xs",
                             weight="bold",
                             color=theme.PRIMARY,
@@ -226,7 +225,7 @@ def confirm_screen(customer: dict, invoice: dict, attachments: list[dict]) -> di
                     ),
                     *(
                         _attachment_row(attachment, index)
-                        for index, attachment in enumerate(attachments, start=1)
+                        for index, attachment in enumerate(uploads, start=1)
                     ),
                 ]
             ),
@@ -238,10 +237,10 @@ def confirm_screen(customer: dict, invoice: dict, attachments: list[dict]) -> di
     )
 
 
-def success_screen(customer: dict, invoice: dict, attachments: list[dict]) -> dict:
+def success_screen(customer: dict, invoices: list[dict], attachments: list[dict]) -> dict:
     return billing_screen(
-        step=4,
-        alt_text=f"ส่งบิล {invoice['invoice_no']} เรียบร้อยแล้ว",
+        step=3,
+        alt_text=f"ส่งบิล {_invoice_nos(invoices)} เรียบร้อยแล้ว",
         title="ดำเนินการสำเร็จ",
         subtitle="ใบแจ้งหนี้ถูกส่งเรียบร้อยแล้ว",
         background_color=theme.SUCCESS,
@@ -260,11 +259,11 @@ def success_screen(customer: dict, invoice: dict, attachments: list[dict]) -> di
                 ]
             ),
             info_card(
-                ("เลขที่บิล", invoice["invoice_no"]),
+                ("เลขที่บิล", _invoice_nos(invoices)),
                 ("ลูกค้า", customer["customer_name"]),
-                ("ยอดค้างชำระ", baht(invoice["outstanding"]), True),
-                ("ที่อยู่บิล", invoice["province"]),
-                ("ไฟล์แนบ", f"{len(attachments)} ไฟล์"),
+                ("ยอดค้างชำระ", baht(_total(invoices)), True),
+                ("ที่อยู่บิล", ", ".join(dict.fromkeys(invoice["province"] for invoice in invoices))),
+                ("ไฟล์แนบ", f"{len(_uploads(invoices, attachments))} ไฟล์"),
             ),
         ],
         footer_note="หากต้องการส่งบิลรายการอื่น กด \"ส่งบิล\" ที่เมนู",

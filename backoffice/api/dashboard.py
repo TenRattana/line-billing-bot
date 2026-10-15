@@ -10,7 +10,7 @@ from app.audit import Action
 from app.config import BANGKOK
 from app.db.models import AuditLog, BillSend, Employee, UserIdentity, WebhookEvent
 from app.db.session import SessionLocal
-from backoffice_api.auth import current_admin
+from backoffice.api.auth import current_admin
 
 router = APIRouter(prefix="/api/dashboard")
 

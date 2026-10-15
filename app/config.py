@@ -3,7 +3,8 @@ from datetime import timedelta, timezone
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# This checkout is the isolated test stack.
+load_dotenv(".env", override=True)
 
 # ponytail: fixed UTC+7, Thailand has no DST
 BANGKOK = timezone(timedelta(hours=7))
@@ -18,10 +19,9 @@ def require_env(name: str) -> str:
 
 LINE_CHANNEL_ID = require_env("LINE_CHANNEL_ID")
 LINE_CHANNEL_SECRET = require_env("LINE_CHANNEL_SECRET")  # in .env
-
-# HR employee directory, cached in Redis for registration checks (app/identity/directory.py).
-# Leave EMPLOYEE_API_URL empty to check against the employees table instead (dev).
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
-EMPLOYEE_API_URL = os.getenv("EMPLOYEE_API_URL", "")
-EMPLOYEE_API_TOKEN = os.getenv("EMPLOYEE_API_TOKEN", "")
-EMPLOYEE_SYNC_INTERVAL_MINUTES = int(os.getenv("EMPLOYEE_SYNC_INTERVAL_MINUTES", "1440"))
+LINE_RICH_MENU_SETUP_ENABLED = os.getenv("LINE_RICH_MENU_SETUP_ENABLED", "false").lower() == "true"
+TEST_TEXT_COMMANDS_ENABLED = os.getenv("TEST_TEXT_COMMANDS_ENABLED", "false").lower() == "true"
+BILLING_LIFF_URL = os.getenv("BILLING_LIFF_URL", "https://liff.line.me/2012025842-Hn7vjID5")
+LIFF_CHANNEL_ID = os.getenv("LIFF_CHANNEL_ID", "2012025842")
+LIFF_ALLOWED_ORIGIN = os.getenv("LIFF_ALLOWED_ORIGIN", "").rstrip("/")
+PUBLIC_BASE_URL = require_env("PUBLIC_BASE_URL").rstrip("/")
