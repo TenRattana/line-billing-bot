@@ -41,7 +41,7 @@ Local endpoints:
 
 - Bot: `http://127.0.0.1:18500`
 - Backoffice: `http://127.0.0.1:18510`
-- PostgreSQL: `127.0.0.1:15433`
+- PostgreSQL: database `line_billing_test` on `central-db` (manage it in pgAdmin)
 
 An empty test database starts with no rows; the app's migrations create the
 schema on its first start.
@@ -57,5 +57,5 @@ Webhook URL: `https://<test-domain>/callback`.
 An external Nginx container on `line-router-net` can proxy the bot at
 `http://line-billing-test-bot:8500` (the container name).
 
-The app uses the private alias `line-billing-test-db`, avoiding the production
-`db` alias on the shared network.
+`DATABASE_URL` uses host `central-db`, never `db`: on the shared network `db`
+also resolves to production's `line-platform-db`.

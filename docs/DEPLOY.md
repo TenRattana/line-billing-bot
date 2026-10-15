@@ -8,7 +8,7 @@ GitHub (push main) ──CI──▶ ghcr.io/<owner>/line-billing-bot:<sha|lates
                            ghcr.io/<owner>/line-billing-backoffice-web:<sha|latest>
                                          │ docker compose pull
                                          ▼
-server:  nginx ภายนอก ──line-router-net──▶ billing-test-bot (:8500) ──▶ db (postgres ของบอท)
+server:  nginx ภายนอก ──line-router-net──▶ billing-test-bot (:8500) ──▶ central-db / database line_billing_test
                                    │            └──▶ central-db (อ่านพนักงาน, read-only)
                                    └──▶ backoffice-web (:80) ──▶ backoffice-api (:8600) ──▶ db
 ```
@@ -91,11 +91,8 @@ LIFF_CHANNEL_ID=
 BILLING_LIFF_URL=https://liff.line.me/<liff-id>
 LIFF_ALLOWED_ORIGIN=
 
-# --- DB ของบอท ---
-POSTGRES_DB=line_platform_test
-POSTGRES_USER=lineapp
-POSTGRES_PASSWORD=<สุ่มใหม่>
-DATABASE_URL=postgresql+asyncpg://lineapp:<POSTGRES_PASSWORD>@db:5432/line_platform_test
+# --- DB ของบอท: database line_billing_test บน central-db (ข้อ 4.1) ---
+DATABASE_URL=postgresql+asyncpg://line_billing_test:<รหัสผ่านของ role>@central-db:5432/line_billing_test
 
 # --- Backoffice ---
 BACKOFFICE_SECRET=<สุ่ม อย่างน้อย 32 ตัว>
@@ -111,8 +108,7 @@ BACKOFFICE_COOKIE_SECURE=true
 | `LIFF_CHANNEL_ID` | | channel ID ของ LINE Login channel ที่ผูกกับ LIFF (ใช้ตรวจ ID token) |
 | `BILLING_LIFF_URL` | | URL ของ LIFF ที่จะเปิดตอนกดเลือกลูกค้า |
 | `LIFF_ALLOWED_ORIGIN` | | เว้นว่างได้ ถ้า LIFF เรียก API ผ่าน domain เดียวกัน ใส่ origin เมื่อ LIFF อยู่คนละ domain |
-| `POSTGRES_*` | ✅ | ใช้ **ตอนสร้าง volume ครั้งแรกเท่านั้น** เปลี่ยนทีหลังจะไม่มีผลกับ DB ที่มีอยู่ |
-| `DATABASE_URL` | ✅ | host ต้องเป็น `db` และรหัสผ่านต้องตรงกับ `POSTGRES_PASSWORD` (`billing-test-bot` ถูก override เป็น `line-billing-test-db` ใน compose เพื่อไม่ให้ชนกับ `db` ของระบบอื่นใน `line-router-net`) |
+| `DATABASE_URL` | ✅ | host ต้องเป็น `central-db` **ห้ามใช้ `db`** เพราะใน `line-router-net` ชื่อ `db` ชี้ได้ทั้ง central-db และ `line-platform-db` ของ production |
 | `BACKOFFICE_SECRET` | ✅ | ใช้ sign cookie ถ้าสั้นกว่า 32 ตัว backoffice จะไม่เปิด สร้างด้วย `openssl rand -hex 32` |
 | `BACKOFFICE_COOKIE_SECURE` | | `true` เมื่อเข้า backoffice ผ่าน HTTPS |
 | `RICH_MENU_FONT` | | path ของฟอนต์ไทย ไม่ต้องใส่ เพราะ image ติดตั้งฟอนต์ให้แล้ว |
@@ -123,6 +119,26 @@ BACKOFFICE_COOKIE_SECURE=true
 ```bash
 chmod 600 .env
 ```
+
+### 4.1 Database บน central-db (ทำครั้งเดียว)
+
+บอทใช้ database `line_billing_test` ของ role `line_billing_test` บน central-db
+(ไม่ใช่ superuser จำกัด connection ไว้ 10 และ role อื่นเข้าไม่ได้) ดูและจัดการได้จาก pgAdmin (`central-db-ui`)
+
+```bash
+umask 077; openssl rand -hex 24 > .line_billing_test_db_password
+docker exec -i central-db psql -U central -d postgres -v ON_ERROR_STOP=1 -v pw="$(cat .line_billing_test_db_password)" <<'SQL'
+CREATE ROLE line_billing_test LOGIN PASSWORD :'pw' NOSUPERUSER NOCREATEDB NOCREATEROLE CONNECTION LIMIT 10;
+CREATE DATABASE line_billing_test OWNER line_billing_test;
+REVOKE ALL ON DATABASE line_billing_test FROM PUBLIC;
+GRANT CONNECT, TEMPORARY ON DATABASE line_billing_test TO line_billing_test;
+SQL
+```
+
+database ว่างได้เลย ตอนบอทเปิด migration จะสร้างตารางให้ ห้ามสร้างตารางของบอทไว้ใน database `central`
+
+`backoffice-api` ต่อ central-db ผ่าน network `db_default` (มีแค่ central-db กับ pgAdmin)
+ไม่ผ่าน `line-router-net` เพราะ backoffice ของ production ใช้ชื่อ `backoffice-api` อยู่ในนั้นแล้ว
 
 ---
 
@@ -238,26 +254,14 @@ Rollback: เปลี่ยน `BOT_IMAGE` / `BACKOFFICE_WEB_IMAGE` ใน `.en
 
 ---
 
-## 12. ย้ายจาก setup เดิม (ทำครั้งเดียว)
+## 12. ประวัติการย้าย (ทำไปแล้ว 2026-10-15)
 
-server เดิมรันแบบ mount `./app` และ `--reload` มี Redis และสร้าง DB จาก backup `.sql`
-
-1. **เช็ก migration ก่อน deploy ครั้งแรก** DB ที่มาจาก backup ถูก stamp ไว้ที่ `f2a6b8c0d4e1`:
-   ```bash
-   docker compose exec db psql -U lineapp -d line_platform_test -c "SELECT version_num FROM alembic_version;"
-   docker compose exec db psql -U lineapp -d line_platform_test -c "SELECT column_name FROM information_schema.columns WHERE table_name='bill_sends' AND column_name='files';"
-   ```
-   - ยังไม่มีคอลัมน์ `files`: ไม่ต้องทำอะไร ตอนเปิด container migration จะเพิ่มให้เอง
-   - มีคอลัมน์แล้ว แต่ version ยังเป็น `f2a6b8c0d4e1`: ต้อง stamp ก่อน ไม่อย่างนั้น container จะล้ม
-     ```bash
-     docker compose run --rm --entrypoint uv billing-test-bot run --no-sync alembic stamp a8c4e6f0b2d3
-     ```
-2. ใส่ `BOT_IMAGE` และ `BACKOFFICE_WEB_IMAGE` ลงใน `.env`
-3. เปลี่ยน `compose.yaml` เป็นเวอร์ชันใหม่จาก repo
-4. `docker compose up -d --remove-orphans` (คำสั่งนี้ลบ container `redis` เดิมที่ไม่ใช้แล้ว)
-5. ลบ `app/`, `alembic/` และไฟล์ `.sql` ที่เคยวางไว้บน server ออกได้
-
-volume ของ DB (`line-billing-test-postgres-data`) ใช้ตัวเดิม ข้อมูลไม่หาย
+- เลิกใช้แบบ mount `./app` กับ `--reload` และเอา Redis ออก โค้ดเก่าบน server ย้ายไปไว้ที่ `_old_code_20261015/`
+- DB test เดิม (container `db` และ volume `line-billing-test-postgres-data`) migrate เป็น `a8c4e6f0b2d3` แล้ว
+  `pg_dump` ไปไว้ที่ `_backup_20261015/line_platform_test.dump` และ restore เข้า `line_billing_test` บน central-db
+  ทุกตารางมีจำนวนแถวตรงกัน
+- volume เดิมยังเก็บไว้สำหรับ rollback ถ้าใช้งานไปสักพักแล้วไม่มีปัญหา ลบได้ด้วย `docker volume rm line-billing-test-postgres-data`
+- container บอทเปลี่ยนชื่อเป็น `line-billing-test-bot` และ nginx ชี้ไปที่ชื่อนี้แล้ว
 
 ---
 

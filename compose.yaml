@@ -1,5 +1,8 @@
 name: line-billing-test
 
+# The database is `line_billing_test` (role `line_billing_test`) on the shared central-db;
+# DATABASE_URL in .env points at host `central-db`. Migrations run on bot start.
+
 services:
   # Not "app": Docker adds the service name as an alias on every network, and
   # production line-oa already answers to "app" on the shared line-router-net.
@@ -16,39 +19,15 @@ services:
       - .env
     environment:
       ATTACHMENT_DIR: /data/validated/slips
-      DATABASE_HOST: line-billing-test-db
       EMPLOYEE_DB_ENV_FILE: /run/secrets/central-db.env
       TEST_TEXT_COMMANDS_ENABLED: "true"
-    depends_on:
-      db:
-        condition: service_healthy
     networks:
       default:
-      central:
+      central:  # nginx-cloudflare and central-db
     # Only data and secrets live on the server; the code is in the image.
     volumes:
       - ./data:/data:z
       - ../db/.env:/run/secrets/central-db.env:ro,Z
-
-  db:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    networks:
-      default:
-        aliases:
-          - line-billing-test-db
-    ports:
-      - "127.0.0.1:15433:5432"
-    env_file:
-      - .env
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-    # An empty volume gets its schema from the app's `alembic upgrade head`.
-    volumes:
-      - postgres_test_data:/var/lib/postgresql/data
 
   backoffice-api:
     image: ${BOT_IMAGE:?set BOT_IMAGE}  # same image as the bot, other entrypoint
@@ -58,11 +37,13 @@ services:
       - .env
     environment:
       ATTACHMENT_DIR: /data/validated/slips
+    networks:
+      default:
+      # central-db's own network (only central-db + pgAdmin), not line-router-net:
+      # production's backoffice already answers to "backoffice-api" there.
+      central-db:
     volumes:
       - ./data:/data:ro,z
-    depends_on:
-      db:
-        condition: service_healthy
 
   backoffice-web:
     image: ${BACKOFFICE_WEB_IMAGE:?set BACKOFFICE_WEB_IMAGE, e.g. ghcr.io/<owner>/line-billing-backoffice-web:latest}
@@ -73,13 +54,12 @@ services:
     depends_on:
       - backoffice-api
 
-volumes:
-  postgres_test_data:
-    name: line-billing-test-postgres-data
-
 networks:
   default:
     name: line-billing-test-net
   central:
     name: line-router-net
+    external: true
+  central-db:
+    name: db_default
     external: true
