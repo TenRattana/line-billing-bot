@@ -11,6 +11,7 @@ from app.billing import repository as billing_repository
 from app.config import LIFF_CHANNEL_ID
 from app.flows import billing
 from app.identity import repository
+from app.line import api as line_api
 from app.line.dispatcher import user_lock
 
 logger = logging.getLogger(__name__)
@@ -108,18 +109,35 @@ def _find_customer(customers: list[dict], customer_code: str) -> dict:
     return selected
 
 
+async def _tell_expired(line_user_id: str) -> None:
+    """The same answer a stale button gets, in the chat the LIFF closes back to."""
+    try:
+        await line_api.push_text(line_user_id, billing.EXPIRED_TEXT)
+    except ApiException as error:
+        logger.warning("Could not push the expired notice to %s: HTTP %s", line_user_id, error.status)
+
+
 @router.get("/customer")
 async def customer(
     customer_code: str,
     authorization: str | None = Header(default=None),
+    flow_id: str = "",
+    screen_step: str = "",
+    screen_id: str = "",
 ):
     """The customer with the invoices still to send (none left: 200 with an empty list).
 
-    404 only when the customer isn't in the employee's groups.
+    404 only when the customer isn't in the employee's groups. 410 when the customer
+    list the LIFF was opened from is no longer the screen on display (the chat is told).
     """
     started, timings = time.perf_counter(), {}
     try:
-        _, employee = await _employee(authorization, timings)
+        line_user_id, employee = await _employee(authorization, timings)
+        screen = {"flow_id": flow_id, "screen_step": screen_step, "screen_id": screen_id}
+        if not billing.is_current_screen(line_user_id, screen):
+            await _tell_expired(line_user_id)
+            raise HTTPException(status_code=410, detail="Screen expired")
+
         selected = _find_customer(receivables.customers_for(employee.emp_code), customer_code)
 
         lookup = time.perf_counter()
@@ -134,6 +152,10 @@ async def customer(
 class Selection(BaseModel):
     customer_code: str
     invoice_nos: list[str]
+    # The customer list the LIFF was opened from (from its URL).
+    flow_id: str = ""
+    screen_step: str = ""
+    screen_id: str = ""
 
 
 @router.post("/selection")
@@ -169,6 +191,8 @@ async def _select(body: Selection, authorization: str | None, timings: dict) -> 
     pushed = time.perf_counter()
     try:
         async with user_lock(line_user_id):  # not alongside a chat event of the same user
+            if not billing.is_current_screen(line_user_id, body.model_dump()):
+                raise HTTPException(status_code=410, detail="Screen expired")
             await billing.start_selected(line_user_id, employee.emp_code, selected, [by_no[n] for n in invoice_nos])
     except ApiException:
         # The session is set; "เช็คงานค้าง" in the chat brings the screen back.

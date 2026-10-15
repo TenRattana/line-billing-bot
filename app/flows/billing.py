@@ -14,7 +14,7 @@ from app.audit import Action
 from app.billing import attachments, receivables
 from app.billing import repository as billing_repository
 from app.billing import session as billing_session
-from app.config import TEST_TEXT_COMMANDS_ENABLED
+from app.config import BILLING_LIFF_URL, TEST_TEXT_COMMANDS_ENABLED
 from app.flex.screens import billing as screens
 from app.flows import registry
 from app.identity import repository
@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 HISTORY_DAYS = 7
 TYPED_MAX = 100  # typed search text
+EXPIRED_TEXT = "รายการนี้หมดอายุแล้ว กด \"เช็คงานค้าง\" ที่เมนูเพื่อเรียกหน้าปัจจุบัน"
 
 
 # =========================================================
@@ -31,18 +32,34 @@ TYPED_MAX = 100  # typed search text
 # =========================================================
 
 
-def _bind_postback_context(node, context: str) -> None:
-    """Append flow/screen context to every postback in the flex tree."""
+def _bind_screen_context(node, context: str) -> None:
+    """Append flow/screen context to every postback, and to every LIFF link, in the flex tree.
+
+    A LIFF link opens without asking the bot, so the LIFF hands the context back to
+    the API, which turns a stale screen away like a stale postback.
+    """
     if isinstance(node, dict):
         if node.get("type") == "postback" and isinstance(node.get("data"), str):
             node["data"] = f"{node['data']}&{context}" if node["data"] else context
+        elif node.get("type") == "uri" and str(node.get("uri", "")).startswith(BILLING_LIFF_URL):
+            node["uri"] = f"{node['uri']}{'&' if '?' in node['uri'] else '?'}{context}"
 
         for child in node.values():
-            _bind_postback_context(child, context)
+            _bind_screen_context(child, context)
 
     elif isinstance(node, list):
         for child in node:
-            _bind_postback_context(child, context)
+            _bind_screen_context(child, context)
+
+
+def is_current_screen(user_id: str, params: dict) -> bool:
+    """Whether params (flow_id, screen_step, screen_id) are from the screen on display."""
+    session = billing_session.get_session(user_id)
+    return bool(session) and (session["flow_id"], session["step"], session["screen_id"]) == (
+        params.get("flow_id"),
+        params.get("screen_step"),
+        params.get("screen_id"),
+    )
 
 
 async def _unsent_customers(emp_code: str) -> list[dict]:
@@ -119,9 +136,9 @@ async def _send_current_screen(user_id: str, reply_token: str | None) -> None:
         await (line_api.reply_text(reply_token, error) if reply_token else line_api.push_text(user_id, error))
         return
 
-    # Postbacks carry the screen they came from so stale buttons are rejected.
+    # Postbacks and LIFF links carry the screen they came from so stale ones are rejected.
     screen_id = uuid.uuid4().hex
-    _bind_postback_context(
+    _bind_screen_context(
         flex_message,
         urlencode(
             {
@@ -165,23 +182,12 @@ def _billing_postback(action: str):
         async def wrapper(*, user_id: str, reply_token: str, params: dict) -> None:
             session = billing_session.get_session(user_id)
 
-            if not session or (
-                session["flow_id"],
-                session["step"],
-                session["screen_id"],
-            ) != (
-                params.get("flow_id"),
-                params.get("screen_step"),
-                params.get("screen_id"),
-            ):
+            if not is_current_screen(user_id, params):
                 # A double tap lands on the screen that just replaced this one: ignore it.
                 if session and not billing_session.can_resend_ui(user_id):
                     return
 
-                await line_api.reply_text(
-                    reply_token,
-                    "รายการนี้หมดอายุแล้ว กด \"เช็คงานค้าง\" ที่เมนูเพื่อเรียกหน้าปัจจุบัน",
-                )
+                await line_api.reply_text(reply_token, EXPIRED_TEXT)
                 return
 
             await handler(user_id, reply_token, params, session)
