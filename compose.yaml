@@ -1,14 +1,14 @@
-name: line-billing-test
+name: line-billing
 
-# The database is `line_billing_test` (role `line_billing_test`) on the shared central-db;
+# Production. The database is `line_billing` (role `line_billing`) on the shared central-db;
 # DATABASE_URL in .env points at host `central-db`. Migrations run on bot start.
 
 services:
   # Not "app": Docker adds the service name as an alias on every network, and
-  # production line-oa already answers to "app" on the shared line-router-net.
-  billing-test-bot:
-    # nginx-cloudflare proxies /line-oa-test to this name (http://line-billing-test-bot:8500).
-    container_name: line-billing-test-bot
+  # the old line-oa answers to "app" on the shared line-router-net.
+  billing-bot:
+    # nginx-cloudflare proxies /line-oa to this name (http://line-billing-bot:8500).
+    container_name: line-billing-bot
     # CI builds and pushes the images; the server only pulls them (`docker compose pull && docker compose up -d`).
     image: ${BOT_IMAGE:?set BOT_IMAGE, e.g. ghcr.io/<owner>/line-billing-bot:latest}
     build: .  # local builds only
@@ -20,13 +20,13 @@ services:
     environment:
       ATTACHMENT_DIR: /data/validated/slips
       EMPLOYEE_DB_ENV_FILE: /run/secrets/central-db.env
-      TEST_TEXT_COMMANDS_ENABLED: "false"
     networks:
       default:
       central:  # nginx-cloudflare and central-db
     # Only data and secrets live on the server; the code is in the image.
+    # DATA_DIR: the folder the receivables pipeline writes to and the slips live in.
     volumes:
-      - ./data:/data:z
+      - ${DATA_DIR:-./data}:/data:z
       - ../db/.env:/run/secrets/central-db.env:ro,Z
 
   backoffice-api:
@@ -40,16 +40,16 @@ services:
     networks:
       default:
       # central-db's own network (only central-db + pgAdmin), not line-router-net:
-      # production's backoffice already answers to "backoffice-api" there.
+      # the old backoffice answers to "backoffice-api" there.
       central-db:
     volumes:
-      - ./data:/data:ro,z
+      - ${DATA_DIR:-./data}:/data:ro,z
 
   backoffice-web:
     image: ${BACKOFFICE_WEB_IMAGE:?set BACKOFFICE_WEB_IMAGE, e.g. ghcr.io/<owner>/line-billing-backoffice-web:latest}
     build: ./backoffice/web  # local builds only
     restart: unless-stopped
-    # Open to the LAN like production's :8510; the app itself requires a login.
+    # Open to the LAN; the app itself requires a login.
     ports:
       - "0.0.0.0:18510:80"
     depends_on:
@@ -57,7 +57,7 @@ services:
 
 networks:
   default:
-    name: line-billing-test-net
+    name: line-billing-net
   central:
     name: line-router-net
     external: true

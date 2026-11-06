@@ -8,7 +8,7 @@ GitHub (push main) ──CI──▶ ghcr.io/<owner>/line-billing-bot:<sha|lates
                            ghcr.io/<owner>/line-billing-backoffice-web:<sha|latest>
                                          │ docker compose pull
                                          ▼
-server:  nginx ภายนอก ──line-router-net──▶ billing-test-bot (:8500) ──▶ central-db / database line_billing_test
+server:  nginx ภายนอก ──line-router-net──▶ billing-bot (:8500) ──▶ central-db / database line_billing
                                    │            └──▶ central-db (อ่านพนักงาน, read-only)
                                    └──▶ backoffice-web (:80) ──▶ backoffice-api (:8600) ──▶ db
 ```
@@ -65,13 +65,13 @@ cd line-billing-bot
 
 - บอทโหลดไฟล์นี้ตอน container เปิด และโหลดใหม่ทุกวัน **18:30** (เวลาไทย)
 - ถ้าไฟล์ไม่มี บอทยังเปิดได้ แต่รายชื่อลูกค้าจะว่าง (log ขึ้น `... not found; no data loaded`)
-- อยากให้โหลดไฟล์ใหม่ทันที: `docker compose restart billing-test-bot`
+- อยากให้โหลดไฟล์ใหม่ทันที: `docker compose restart billing-bot`
 
 ---
 
 ## 4. สร้าง `.env`
 
-ทั้ง `billing-test-bot`, `db` และ `backoffice-api` อ่านไฟล์เดียวกันนี้
+ทั้ง `billing-bot`, `db` และ `backoffice-api` อ่านไฟล์เดียวกันนี้
 
 ```dotenv
 # --- Image ที่จะรัน (ระบุ tag เป็น SHA ของ commit จะ rollback ได้) ---
@@ -84,15 +84,15 @@ LINE_CHANNEL_SECRET=
 LINE_RICH_MENU_SETUP_ENABLED=true
 
 # URL สาธารณะของบอท รวม prefix ที่ nginx ใช้ (ใช้ทำ URL ของโลโก้ตอนลงทะเบียน)
-PUBLIC_BASE_URL=https://<domain>/line-oa-test
+PUBLIC_BASE_URL=https://<domain>/line-oa
 
 # --- LIFF (Developers Console > LINE Login channel > LIFF) ---
 LIFF_CHANNEL_ID=
 BILLING_LIFF_URL=https://liff.line.me/<liff-id>
 LIFF_ALLOWED_ORIGIN=
 
-# --- DB ของบอท: database line_billing_test บน central-db (ข้อ 4.1) ---
-DATABASE_URL=postgresql+asyncpg://line_billing_test:<รหัสผ่านของ role>@central-db:5432/line_billing_test
+# --- DB ของบอท: database line_billing บน central-db (ข้อ 4.1) ---
+DATABASE_URL=postgresql+asyncpg://line_billing:<รหัสผ่านของ role>@central-db:5432/line_billing
 
 # --- Backoffice ---
 BACKOFFICE_SECRET=<สุ่ม อย่างน้อย 32 ตัว>
@@ -122,16 +122,16 @@ chmod 600 .env
 
 ### 4.1 Database บน central-db (ทำครั้งเดียว)
 
-บอทใช้ database `line_billing_test` ของ role `line_billing_test` บน central-db
+บอทใช้ database `line_billing` ของ role `line_billing` บน central-db
 (ไม่ใช่ superuser จำกัด connection ไว้ 10 และ role อื่นเข้าไม่ได้) ดูและจัดการได้จาก pgAdmin (`central-db-ui`)
 
 ```bash
-umask 077; openssl rand -hex 24 > .line_billing_test_db_password
-docker exec -i central-db psql -U central -d postgres -v ON_ERROR_STOP=1 -v pw="$(cat .line_billing_test_db_password)" <<'SQL'
-CREATE ROLE line_billing_test LOGIN PASSWORD :'pw' NOSUPERUSER NOCREATEDB NOCREATEROLE CONNECTION LIMIT 10;
-CREATE DATABASE line_billing_test OWNER line_billing_test;
-REVOKE ALL ON DATABASE line_billing_test FROM PUBLIC;
-GRANT CONNECT, TEMPORARY ON DATABASE line_billing_test TO line_billing_test;
+umask 077; openssl rand -hex 24 > .line_billing_db_password
+docker exec -i central-db psql -U central -d postgres -v ON_ERROR_STOP=1 -v pw="$(cat .line_billing_db_password)" <<'SQL'
+CREATE ROLE line_billing LOGIN PASSWORD :'pw' NOSUPERUSER NOCREATEDB NOCREATEROLE CONNECTION LIMIT 10;
+CREATE DATABASE line_billing OWNER line_billing;
+REVOKE ALL ON DATABASE line_billing FROM PUBLIC;
+GRANT CONNECT, TEMPORARY ON DATABASE line_billing TO line_billing;
 SQL
 ```
 
@@ -159,45 +159,45 @@ echo <TOKEN> | docker login ghcr.io -u <github-user> --password-stdin
 ```bash
 docker compose pull
 docker compose up -d
-docker compose ps          # billing-test-bot, db, backoffice-api, backoffice-web ต้องเป็น running / healthy
-docker compose logs -f billing-test-bot
+docker compose ps          # billing-bot, db, backoffice-api, backoffice-web ต้องเป็น running / healthy
+docker compose logs -f billing-bot
 ```
 
-ตอน `billing-test-bot` เปิด จะรัน `alembic upgrade head` ก่อนเสมอ ถ้า DB ว่าง migration จะสร้างทุกตารางให้
-ถ้า migration ล้ม container จะหยุด (ดูสาเหตุได้จาก `docker compose logs billing-test-bot`)
+ตอน `billing-bot` เปิด จะรัน `alembic upgrade head` ก่อนเสมอ ถ้า DB ว่าง migration จะสร้างทุกตารางให้
+ถ้า migration ล้ม container จะหยุด (ดูสาเหตุได้จาก `docker compose logs billing-bot`)
 
-service ชื่อ `billing-test-bot` ไม่ใช่ `app` เพราะ Docker ตั้ง alias ตามชื่อ service ให้ทุก network และ `line-oa` ของ production ใช้ alias `app` ใน `line-router-net` อยู่แล้ว ห้ามเปลี่ยนกลับเป็น `app`
+service ชื่อ `billing-bot` ไม่ใช่ `app` เพราะ Docker ตั้ง alias ตามชื่อ service ให้ทุก network และ `line-oa` ของ production ใช้ alias `app` ใน `line-router-net` อยู่แล้ว ห้ามเปลี่ยนกลับเป็น `app`
 
-ห้ามเพิ่ม `--workers` หรือ scale `billing-test-bot` เกิน 1 ตัว เพราะ session ของการส่งบิลและ lock ของผู้ใช้เก็บใน memory ของ process
+ห้ามเพิ่ม `--workers` หรือ scale `billing-bot` เกิน 1 ตัว เพราะ session ของการส่งบิลและ lock ของผู้ใช้เก็บใน memory ของ process
 
 ---
 
 ## 7. ตั้ง nginx ภายนอก
 
 route อยู่บน `nginx-cloudflare` (`/opt/nginx-cloudflare`) มันตัด prefix ด้วย `rewrite`
-แล้วส่งต่อไปที่ **ชื่อ container** `line-billing-test-bot` ซึ่ง compose ล็อกไว้ด้วย `container_name`
+แล้วส่งต่อไปที่ **ชื่อ container** `line-billing-bot` ซึ่ง compose ล็อกไว้ด้วย `container_name`
 ถ้าจะเปลี่ยนชื่อนี้ ต้องแก้ทั้ง compose และ nginx และต้องเปิด container ชื่อใหม่ก่อนค่อย reload nginx
 
 ```nginx
-location ^~ /line-oa-test {
-    rewrite ^/line-oa-test/+(.+)$ /$1 break;
-    proxy_pass http://line-billing-test-bot:8500;
+location ^~ /line-oa {
+    rewrite ^/line-oa/+(.+)$ /$1 break;
+    proxy_pass http://line-billing-bot:8500;
     ...
 }
 ```
 
 ⚠️ nginx แปลงชื่อ container เป็น IP ครั้งเดียวตอนเปิดหรือ reload เท่านั้น:
-- ถ้า container ของบอทถูกสร้างใหม่แล้วได้ IP ใหม่ `/line-oa-test` จะตอบ 502 ให้ reload nginx
+- ถ้า container ของบอทถูกสร้างใหม่แล้วได้ IP ใหม่ `/line-oa` จะตอบ 502 ให้ reload nginx
   (`docker exec nginx-cloudflare nginx -s reload` เป็นการ reload แบบไม่ตัด connection production ยังใช้งานได้ตลอด)
-- **ห้าม restart nginx-cloudflare ตอนที่บอท test ปิดอยู่** nginx จะหาชื่อ `line-billing-test-bot` ไม่เจอ แล้วเปิดไม่ขึ้นเลย ทุก route รวมถึง production จะล่มไปด้วย
+- **ห้าม restart nginx-cloudflare ตอนที่บอท ปิดอยู่** nginx จะหาชื่อ `line-billing-bot` ไม่เจอ แล้วเปิดไม่ขึ้นเลย ทุก route รวมถึง production จะล่มไปด้วย
   (ถ้าวันหน้าจะแก้ ให้ใส่ `resolver 127.0.0.11` แล้วใช้ upstream เป็นตัวแปรแทน ซึ่งต้องแก้ config ส่วนกลาง ควรตกลงกับผู้ดูแล nginx ก่อน)
 
 | URL ภายนอก | ไปที่ |
 |---|---|
-| `https://<domain>/line-oa-test/callback` | webhook ของ LINE |
-| `https://<domain>/line-oa-test/api/liff/...` | API ที่ LIFF เรียก |
-| `https://<domain>/line-oa-test/assets/...` | โลโก้ที่ส่งตอนลงทะเบียน |
-| `https://<domain>/line-oa-test/health` | ตรวจว่าบอทเปิดอยู่ |
+| `https://<domain>/line-oa/callback` | webhook ของ LINE |
+| `https://<domain>/line-oa/api/liff/...` | API ที่ LIFF เรียก |
+| `https://<domain>/line-oa/assets/...` | โลโก้ที่ส่งตอนลงทะเบียน |
+| `https://<domain>/line-oa/health` | ตรวจว่าบอทเปิดอยู่ |
 
 Backoffice เปิดให้เครื่องใน LAN เข้าที่ `http://<IP ของ server>:18510` (แบบเดียวกับ backoffice production ที่ `:8510`)
 ไม่ผ่าน nginx และป้องกันด้วยการ login ของ backoffice อย่างเดียว ถ้าจะเปิดออก internet ผ่าน nginx
@@ -209,7 +209,7 @@ Backoffice เปิดให้เครื่องใน LAN เข้าท�
 
 | ที่ | ตั้ง |
 |---|---|
-| Messaging API channel > Webhook URL | `https://<domain>/line-oa-test/callback` แล้วกด Verify และเปิด **Use webhook** |
+| Messaging API channel > Webhook URL | `https://<domain>/line-oa/callback` แล้วกด Verify และเปิด **Use webhook** |
 | Messaging API channel > Auto-reply / Greeting | ปิด (บอทตอบเอง) |
 | LINE Login channel > LIFF > Endpoint URL | URL ของหน้า LIFF (billing-liff) |
 | Provider | LIFF channel กับ Messaging API channel ต้องอยู่ **provider เดียวกัน** ไม่อย่างนั้น user ID ที่ได้จาก LIFF จะไม่ตรงกับในแชต และหน้าอัปโหลดรูปจะไม่ถูกส่งเข้าแชต |
@@ -231,13 +231,13 @@ docker compose exec backoffice-api uv run --no-sync python -m backoffice.api.cre
 
 ```bash
 curl -s http://127.0.0.1:18500/health                      # {"status":"ok",...}
-curl -s https://<domain>/line-oa-test/openapi.json | grep -o '/api/liff/[a-z]*'
-docker compose logs billing-test-bot | grep -E "Running upgrade|ERROR"
+curl -s https://<domain>/line-oa/openapi.json | grep -o '/api/liff/[a-z]*'
+docker compose logs billing-bot | grep -E "Running upgrade|ERROR"
 ```
 
 - กด Verify webhook ใน Console ต้องขึ้น Success
 - ทักบอทใน LINE ต้องได้ข้อความให้ลงทะเบียน
-- ดูเวลาที่ LIFF ใช้: `docker compose logs billing-test-bot | grep "LIFF customer"` (มี `verify_ms`, `employee_ms`, `total_ms`)
+- ดูเวลาที่ LIFF ใช้: `docker compose logs billing-bot | grep "LIFF customer"` (มี `verify_ms`, `employee_ms`, `total_ms`)
 
 ---
 
@@ -261,9 +261,8 @@ Rollback: เปลี่ยน `BOT_IMAGE` / `BACKOFFICE_WEB_IMAGE` ใน `.en
   `pg_dump` ไปไว้ที่ `_backup_20261015/line_platform_test.dump` และ restore เข้า `line_billing_test` บน central-db
   ทุกตารางมีจำนวนแถวตรงกัน
 - volume เดิมยังเก็บไว้สำหรับ rollback ถ้าใช้งานไปสักพักแล้วไม่มีปัญหา ลบได้ด้วย `docker volume rm line-billing-test-postgres-data`
-- container บอทเปลี่ยนชื่อเป็น `line-billing-test-bot` และ nginx ชี้ไปที่ชื่อนี้แล้ว
-
----
+- (test) container บอทชื่อ `line-billing-test-bot` และ nginx `/line-oa-test` ชี้ไปที่ชื่อนี้
+- 2026-11: เลิกใช้ชุด test แล้วเปลี่ยน stack นี้เป็น production (project `line-billing`, container `line-billing-bot`, DB `line_billing`, nginx `/line-oa`)
 
 ## 13. ปัญหาที่เจอบ่อย
 
@@ -273,10 +272,10 @@ Rollback: เปลี่ยน `BOT_IMAGE` / `BACKOFFICE_WEB_IMAGE` ใน `.en
 | `pull access denied` / `unauthorized` | ยังไม่ได้ login GHCR หรือ token ไม่มีสิทธิ์ `read:packages` หรือ `<owner>` เป็นตัวใหญ่ |
 | `network line-router-net declared as external, but could not be found` | stack ของ central-db ยังไม่ได้รัน หรือ network ชื่อไม่ตรง |
 | `POSTGRES_PASSWORD is not set in /run/secrets/central-db.env` | วางโฟลเดอร์ deploy ไม่ได้อยู่ข้าง `db/` หรือ `../db/.env` ไม่มีค่านี้ |
-| `billing-test-bot` restart วน และ log มี `alembic` error | migration ล้ม ดูข้อ 12.1 |
+| `billing-bot` restart วน และ log มี `alembic` error | migration ล้ม ดูข้อ 12.1 |
 | `BACKOFFICE_SECRET must be set to at least 32 random characters` | `BACKOFFICE_SECRET` สั้นเกิน |
 | LIFF ได้ 404 `Not Found` ทุก path | nginx ไม่ได้ตัด prefix (ไม่มี `rewrite` ใน route) หรือ image ยังเป็นตัวเก่า |
-| `/line-oa-test` ตอบ 502 หลัง deploy | container ได้ IP ใหม่ แต่ nginx ยังจำ IP เดิมอยู่: `docker exec nginx-cloudflare nginx -s reload` |
+| `/line-oa` ตอบ 502 หลัง deploy | container ได้ IP ใหม่ แต่ nginx ยังจำ IP เดิมอยู่: `docker exec nginx-cloudflare nginx -s reload` |
 | LIFF ยืนยันผ่าน แต่ไม่มีหน้าอัปโหลดรูปในแชต | LIFF กับ Messaging API อยู่คนละ provider (ข้อ 8) |
 | รายชื่อลูกค้าว่าง | ไม่มีไฟล์ใน `data/validated/output/` หรือรหัสพนักงานไม่อยู่ใน `group_latest.json` |
-| โลโก้ตอนลงทะเบียนไม่ขึ้น | `PUBLIC_BASE_URL` ผิด หรือไม่ได้รวม prefix `/line-oa-test` |
+| โลโก้ตอนลงทะเบียนไม่ขึ้น | `PUBLIC_BASE_URL` ผิด หรือไม่ได้รวม prefix `/line-oa` |

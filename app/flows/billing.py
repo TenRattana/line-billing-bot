@@ -62,6 +62,27 @@ def is_current_screen(user_id: str, params: dict) -> bool:
     )
 
 
+def claim_screen(params: dict, liff_user: str) -> tuple[str, str] | None:
+    """(LINE user, employee) whose chat screen a LIFF link came from; None if it isn't on display.
+
+    The shared LIFF lives under another LINE provider, so its user id differs from the
+    chat's: the link's unguessable flow/screen ids say who this is. The first LIFF user
+    to open a bill's link holds it, so a forwarded link is refused (PermissionError).
+    No await in here, so two requests can't both claim it.
+    ponytail: whoever opens a leaked link first wins it; use LIFF's own user id once
+    production has a LIFF under its provider.
+    """
+    found = billing_session.find_by_flow(params.get("flow_id") or "")
+    if not found or not is_current_screen(found[0], params):
+        return None
+
+    user_id, session = found
+    if session["liff_user"] not in (None, liff_user):
+        raise PermissionError
+    session["liff_user"] = liff_user
+    return user_id, session["emp_code"]
+
+
 async def _unsent_customers(emp_code: str) -> list[dict]:
     """The employee's customers with only invoices not sent yet (and none with nothing left).
 

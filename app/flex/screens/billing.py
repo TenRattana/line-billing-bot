@@ -3,7 +3,7 @@ from datetime import datetime
 from urllib.parse import urlencode
 
 from app.billing import attachments as attachment_files
-from app.config import BILLING_LIFF_URL
+from app.config import BILLING_LIFF_URL, LIFF_API_PATH
 from app.flex import theme
 from app.flex.components import (
     baht,
@@ -59,6 +59,13 @@ def _rows_or_empty(rows: list, empty_text: str) -> list:
     return rows or [text(empty_text, size="sm", color=theme.TEXT_MUTED, align="center", wrap=True)]
 
 
+def _liff_link(customer_code: str) -> str:
+    params = {"customer_code": customer_code}
+    if LIFF_API_PATH:
+        params["api"] = LIFF_API_PATH
+    return f"{BILLING_LIFF_URL.rstrip('/')}/?{urlencode(params)}"
+
+
 def customer_screen(customers: list[dict], *, page: int, query: str) -> dict:
     rows, first, buttons, note = _paged(customers, page, query, "ชื่อหรือรหัสลูกค้า")
 
@@ -74,7 +81,7 @@ def customer_screen(customers: list[dict], *, page: int, query: str) -> dict:
                     title=customer["customer_name"],
                     subtitle=customer["customer_code"],
                     detail=f"ยอด {baht(customer['total_outstanding'])} · {customer['invoice_count']} บิล",
-                    uri=f"{BILLING_LIFF_URL.rstrip('/')}/?{urlencode({'customer_code': customer['customer_code']})}",
+                    uri=_liff_link(customer["customer_code"]),
                 )
                 for index, customer in enumerate(rows, start=first)
             ],

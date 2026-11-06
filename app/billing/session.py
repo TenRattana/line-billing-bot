@@ -23,6 +23,7 @@ def new_session(user_id: str, emp_code: str) -> dict[str, Any]:
         "emp_code": emp_code,  # whose sales group to show, and who the audit log names
         "flow_id": uuid.uuid4().hex,
         "screen_id": None,
+        "liff_user": None,  # who opened this bill's LIFF link first (see flows.billing.claim_screen)
         "step": "customer",
         "customer": None,
         "invoices": [],  # one, or several covered by the same upload
@@ -38,6 +39,11 @@ def new_session(user_id: str, emp_code: str) -> dict[str, Any]:
 
 def get_session(user_id: str) -> dict[str, Any] | None:
     return _sessions.get(user_id)
+
+
+def find_by_flow(flow_id: str) -> tuple[str, dict[str, Any]] | None:
+    # ponytail: linear scan, sessions are few and live only while a bill is in progress
+    return next(((user_id, s) for user_id, s in _sessions.items() if s["flow_id"] == flow_id), None)
 
 
 def update(user_id: str, **fields: Any) -> None:

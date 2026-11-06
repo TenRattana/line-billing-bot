@@ -21,7 +21,10 @@ LINE_CHANNEL_ID = require_env("LINE_CHANNEL_ID")
 LINE_CHANNEL_SECRET = require_env("LINE_CHANNEL_SECRET")  # in .env
 LINE_RICH_MENU_SETUP_ENABLED = os.getenv("LINE_RICH_MENU_SETUP_ENABLED", "false").lower() == "true"
 TEST_TEXT_COMMANDS_ENABLED = os.getenv("TEST_TEXT_COMMANDS_ENABLED", "false").lower() == "false"
-BILLING_LIFF_URL = os.getenv("BILLING_LIFF_URL", "https://liff.line.me/2012025842-Hn7vjID5")
-LIFF_CHANNEL_ID = os.getenv("LIFF_CHANNEL_ID", "2012025842")
+# `or`: an empty line in .env (BILLING_LIFF_URL=) must not wipe the default; LINE rejects a link with no scheme.
+BILLING_LIFF_URL = os.getenv("BILLING_LIFF_URL") or "https://liff.line.me/2012025842-Hn7vjID5"
+LIFF_CHANNEL_ID = os.getenv("LIFF_CHANNEL_ID") or "2012025842"
 LIFF_ALLOWED_ORIGIN = os.getenv("LIFF_ALLOWED_ORIGIN", "").rstrip("/")
+# Where the shared LIFF page calls this bot (sent in its links); empty keeps the page's default.
+LIFF_API_PATH = os.getenv("LIFF_API_PATH", "")
 PUBLIC_BASE_URL = require_env("PUBLIC_BASE_URL").rstrip("/")
