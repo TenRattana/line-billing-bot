@@ -5,6 +5,7 @@ from typing import Any
 from app.billing import attachments
 
 UI_RESEND_COOLDOWN_SECONDS = 5.0
+IDLE_LIMIT_SECONDS = 24 * 3600
 
 # Steps: customer -> (invoices picked in LIFF) -> attachment -> confirm
 _sessions: dict[str, dict[str, Any]] = {}
@@ -32,6 +33,7 @@ def new_session(user_id: str, emp_code: str) -> dict[str, Any]:
         "query": "",
         "page": 0,
         "last_ui_sent_at": 0.0,
+        "last_active_at": time.monotonic(),
     }
     _sessions[user_id] = session
     return session
@@ -74,7 +76,7 @@ def mark_screen_sent(user_id: str, screen_id: str) -> None:
     session = _sessions.get(user_id)
     if session:
         session["screen_id"] = screen_id
-        session["last_ui_sent_at"] = time.monotonic()
+        session["last_ui_sent_at"] = session["last_active_at"] = time.monotonic()
 
 
 def can_resend_ui(user_id: str) -> bool:
@@ -84,8 +86,13 @@ def can_resend_ui(user_id: str) -> bool:
     return time.monotonic() - session["last_ui_sent_at"] >= UI_RESEND_COOLDOWN_SECONDS
 
 
-def clear_session(user_id: str, *, keep_files: bool = False) -> None:
-    """keep_files: the files belong to a recorded send (don't delete a sent slip)."""
-    if not keep_files:
-        _discard_files(user_id)
+def clear_session(user_id: str) -> None:
+    _discard_files(user_id)
     _sessions.pop(user_id, None)
+
+
+async def expire_idle() -> None:
+    """Scheduled. Async so it runs on the event loop, never alongside a handler's step."""
+    limit = time.monotonic() - IDLE_LIMIT_SECONDS
+    for user_id in [u for u, session in _sessions.items() if session["last_active_at"] < limit]:
+        clear_session(user_id)

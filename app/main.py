@@ -1,11 +1,14 @@
+import hmac
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from app.billing import receivables
-from app.config import LIFF_ALLOWED_ORIGIN, LINE_RICH_MENU_SETUP_ENABLED
+from app.billing import attachments, receivables
+from app.billing import session as billing_session
+from app.config import LIFF_ALLOWED_ORIGIN, LINE_RICH_MENU_SETUP_ENABLED, RELOAD_TOKEN
 from app.identity import directory, repository
 from app.line import api as line_api
 from app.line import richmenu
@@ -22,6 +25,8 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    attachments.clear_temp()
+
     # Off until a new LINE channel is verified: setup replaces menus and relinks every user.
     if LINE_RICH_MENU_SETUP_ENABLED:
         try:
@@ -29,11 +34,14 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("Rich menu setup failed")
 
-    receivables.start_daily_reload()  # the first load happens at import
+    scheduler = AsyncIOScheduler(timezone="Asia/Bangkok")
+    receivables.schedule(scheduler)  # the first load happens at import
+    scheduler.add_job(billing_session.expire_idle, trigger="interval", hours=1, id="expire_idle_sessions")
+    scheduler.start()
 
     yield
 
-    receivables.stop_daily_reload()
+    scheduler.shutdown(wait=False)
 
     await directory.close()
     await line_api.close()
@@ -72,3 +80,16 @@ async def health():
         "status": "ok",
         "service": "line-billing-bot",
     }
+
+
+@app.post("/internal/reload")
+async def reload_receivables(x_reload_token: str = Header(default="")):
+    """Load the exports now, after a correction; the daily load still runs. nginx exposes this, hence the token."""
+    if not RELOAD_TOKEN or not hmac.compare_digest(x_reload_token.encode(), RELOAD_TOKEN.encode()):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    try:
+        return await receivables.refresh()
+    except Exception:
+        logger.exception("Receivables reload failed; keeping the current data")
+        raise HTTPException(status_code=503, detail="Export not usable; keeping the current data") from None

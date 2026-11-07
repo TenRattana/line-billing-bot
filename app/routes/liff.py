@@ -10,6 +10,7 @@ from app.billing import receivables
 from app.billing import repository as billing_repository
 from app.config import LIFF_CHANNEL_ID
 from app.flows import billing
+from app.identity import repository
 from app.line.dispatcher import user_lock
 
 logger = logging.getLogger(__name__)
@@ -92,6 +93,14 @@ async def _identify(authorization: str | None, screen: dict, timings: dict) -> t
 
     if owner is None:
         raise HTTPException(status_code=410, detail="Screen expired")
+
+    # The backoffice can't reach this process's sessions, so a release is only seen here.
+    lookup = time.perf_counter()
+    employee = await repository.get_employee_by_line_user_id(owner[0])
+    timings["employee_ms"] = _ms(lookup)
+
+    if employee is None or employee.emp_code != owner[1]:
+        raise HTTPException(status_code=403, detail="Employee is no longer registered")
 
     return owner
 

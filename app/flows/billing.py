@@ -1,4 +1,5 @@
-import logging
+import asyncio
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
@@ -14,13 +15,11 @@ from app.audit import Action
 from app.billing import attachments, receivables
 from app.billing import repository as billing_repository
 from app.billing import session as billing_session
-from app.config import BILLING_LIFF_URL, TEST_TEXT_COMMANDS_ENABLED
+from app.config import BILLING_LIFF_URL
 from app.flex.screens import billing as screens
 from app.flows import registry
 from app.identity import repository
 from app.line import api as line_api
-
-logger = logging.getLogger(__name__)
 
 HISTORY_DAYS = 7
 TYPED_MAX = 100  # typed search text
@@ -80,6 +79,7 @@ def claim_screen(params: dict, liff_user: str) -> tuple[str, str] | None:
     if session["liff_user"] not in (None, liff_user):
         raise PermissionError
     session["liff_user"] = liff_user
+    session["last_active_at"] = time.monotonic()
     return user_id, session["emp_code"]
 
 
@@ -304,31 +304,22 @@ async def confirm_send(user_id: str, reply_token: str, params: dict, session: di
 
     sent = await _sent_of(invoices)
     if sent:  # sent meanwhile (e.g. from another device): don't record it twice
-        for attachment in attached:  # a sent invoice's copy has the same path as its sent slip
-            if attachment["invoice_no"] not in sent:
-                attachments.delete(attachment)
-        billing_session.clear_session(user_id, keep_files=True)
+        billing_session.clear_session(user_id)
         await line_api.reply_text(reply_token, f"บิล {', '.join(sorted(sent))} ถูกส่งไปแล้ว ไม่ได้ส่งซ้ำ")
         return
 
-    # TODO: เปลี่ยน block นี้เป็น mail service จริงในขั้นถัดไป
-    logger.info(
-        "SEND INVOICE (%s / %s): %s",
-        [invoice["invoice_no"] for invoice in invoices],
-        customer["customer_code"],
-        [attachment["file_path"] for attachment in attached],
-    )
-
-    # Recorded (with its audit rows) before replying, so the user never sees
-    # success for an unsaved send.
+    # Slips go out only after the send is recorded, so the system that collects them
+    # never takes one without a record, and the user never sees success for an unsaved send.
+    await asyncio.to_thread(attachments.archive, attached)
     await billing_repository.record_send(
         emp_code=session["emp_code"],
         customer=customer,
         invoices=invoices,
         attachments=attached,
     )
+    await asyncio.to_thread(attachments.publish, attached)
 
-    billing_session.clear_session(user_id, keep_files=True)
+    billing_session.clear_session(user_id)
     await line_api.reply_flex(reply_token, screens.success_screen(customer, invoices, attached))
 
 
@@ -381,7 +372,7 @@ async def receive_attachment(
         return
 
     sent = await _sent_of(session["invoices"])
-    if sent:  # sent meanwhile: its stored slip must not be overwritten
+    if sent:  # sent meanwhile
         billing_session.clear_session(user_id)
         await line_api.reply_text(
             reply_token, f"บิล {', '.join(sorted(sent))} ถูกส่งไปแล้ว กด \"ส่งบิล\" ที่เมนูเพื่อเลือกบิลอื่น"
@@ -411,7 +402,8 @@ async def receive_attachment(
         await line_api.reply_text(reply_token, error)
         return
 
-    saved = attachments.save_copies(
+    saved = await asyncio.to_thread(
+        attachments.save_copies,
         invoices=session["invoices"],
         customer_id=session["customer"]["customer_code"],
         content=content,
@@ -446,10 +438,6 @@ async def receive_text(*, user_id: str, reply_token: str, message: TextMessageCo
     """
     session = billing_session.get_session(user_id)
     query = message.text.strip()
-
-    if TEST_TEXT_COMMANDS_ENABLED and query == "ส่งบิล":
-        await _start_new_bill(user_id, reply_token)
-        return
 
     if not session or session["step"] != "customer" or not query:
         return

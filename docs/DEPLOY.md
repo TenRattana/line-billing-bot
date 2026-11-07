@@ -43,7 +43,9 @@ server:  nginx ภายนอก ──line-router-net──▶ billing-bot (:8
     └── data/
         └── validated/
             ├── output/         ← pipeline เขียนไฟล์ลูกหนี้ที่นี่ (ข้อ 3)
-            └── slips/          ← บอทเขียนสลิปที่ผู้ใช้อัปโหลดที่นี่
+            ├── slips/          ← สลิปที่ยืนยันแล้ว ระบบอื่นมาหยิบจากที่นี่ ห้ามเปลี่ยนชื่อไฟล์หรือ .json
+            ├── slips_history/  ← สำเนาสลิปให้ backoffice เปิดดู เก็บถาวร
+            └── slips_temp/     ← สลิปที่ยังไม่ยืนยัน ถูกล้างทุกครั้งที่บอทเปิด
 ```
 
 ```bash
@@ -64,8 +66,14 @@ cd line-billing-bot
 | `group_latest.json` | `{"groups": [{"EmpID": "50085", "GroupID": "C301,C302"}]}` |
 
 - บอทโหลดไฟล์นี้ตอน container เปิด และโหลดใหม่ทุกวัน **18:30** (เวลาไทย)
-- ถ้าไฟล์ไม่มี บอทยังเปิดได้ แต่รายชื่อลูกค้าจะว่าง (log ขึ้น `... not found; no data loaded`)
-- อยากให้โหลดไฟล์ใหม่ทันที: `docker compose restart billing-bot`
+- ถ้ารอบ 18:30 ไฟล์ไม่มา เสีย หรือยังเป็นไฟล์เก่า บอทจะลองใหม่ตอน **19:00** ถ้ายังไม่ได้จะใช้ข้อมูลเดิมจนถึงรอบถัดไป (log ขึ้น `Daily receivables load failed`)
+- ถ้าบอทเปิดตอนไฟล์ใช้ไม่ได้ บอทยังเปิดได้ แต่รายชื่อลูกค้าจะว่าง (log ขึ้น `No receivables loaded`)
+- บิลที่ส่งแล้วจะถูกซ่อนเฉพาะถ้าส่งหลังเวลาไฟล์ `ar_outstanding_latest.json` บิลที่ส่งก่อนหน้านั้นและยังอยู่ในไฟล์จะกลับมาแสดง
+- อยากให้โหลดไฟล์ใหม่ทันที โดยรอบ 18:30 ยังทำงานตามปกติ:
+
+```bash
+curl -X POST -H "X-Reload-Token: <RELOAD_TOKEN>" http://127.0.0.1:8500/internal/reload
+```
 
 ---
 
@@ -111,10 +119,11 @@ BACKOFFICE_COOKIE_SECURE=true
 | `DATABASE_URL` | ✅ | host ต้องเป็น `central-db` **ห้ามใช้ `db`** เพราะใน `line-router-net` ชื่อ `db` ชี้ได้ทั้ง central-db และ `line-platform-db` ของ production |
 | `BACKOFFICE_SECRET` | ✅ | ใช้ sign cookie ถ้าสั้นกว่า 32 ตัว backoffice จะไม่เปิด สร้างด้วย `openssl rand -hex 32` |
 | `BACKOFFICE_COOKIE_SECURE` | | `true` เมื่อเข้า backoffice ผ่าน HTTPS |
+| `RELOAD_TOKEN` | | รหัสของ `/internal/reload` สร้างด้วย `openssl rand -hex 32` ถ้าเว้นว่าง endpoint นี้จะปิด |
 | `RICH_MENU_FONT` | | path ของฟอนต์ไทย ไม่ต้องใส่ เพราะ image ติดตั้งฟอนต์ให้แล้ว |
 
-ค่าที่ compose ตั้งให้เอง ไม่ต้องใส่ใน `.env`: `ATTACHMENT_DIR`, `DATABASE_HOST`,
-`EMPLOYEE_DB_ENV_FILE` และ `TEST_TEXT_COMMANDS_ENABLED`
+ค่าที่ compose ตั้งให้เอง ไม่ต้องใส่ใน `.env`: `ATTACHMENT_DIR`, `DATABASE_HOST`
+และ `EMPLOYEE_DB_ENV_FILE`
 
 ```bash
 chmod 600 .env

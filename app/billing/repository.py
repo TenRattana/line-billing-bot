@@ -4,6 +4,7 @@ from sqlalchemy import select
 
 from app import audit
 from app.audit import Action
+from app.billing import receivables
 from app.db.models.bill_send import BillSend
 from app.db.session import SessionLocal
 
@@ -30,7 +31,7 @@ async def record_send(
                     attachment_count=len(files),
                     files=[
                         {
-                            "path": attachment["file_path"],
+                            "path": attachment["history_path"],  # slips is emptied by the system that collects it
                             "mime_type": attachment["mime_type"],
                             "original_filename": attachment["original_filename"],
                             "file_size": attachment["file_size"],
@@ -57,13 +58,19 @@ async def record_send(
 
 
 async def sent_invoice_ids(invoice_nos: list[str]) -> set[str]:
-    """Which of these invoices were already sent (by anyone)."""
+    """Which of these invoices were sent (by anyone) since the export was written.
+
+    The export is the truth: an older send of an invoice that is still in it was
+    corrected by accounting, or not processed yet, and shows up again.
+    """
     if not invoice_nos:
         return set()
 
     async with SessionLocal() as session:
         result = await session.scalars(
-            select(BillSend.invoice_id).where(BillSend.invoice_id.in_(invoice_nos)).distinct()
+            select(BillSend.invoice_id)
+            .where(BillSend.invoice_id.in_(invoice_nos), BillSend.sent_at >= receivables.EXPORTED_AT)
+            .distinct()
         )
         return set(result)
 

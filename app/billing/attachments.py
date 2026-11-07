@@ -1,12 +1,20 @@
 import json
+import logging
 import os
 import re
+import shutil
 from datetime import datetime
 from pathlib import Path
 
 from app.config import BANGKOK
 
+logger = logging.getLogger(__name__)
+
+# Another system collects from here and moves the files away within days. It relies on
+# these names and metadata: only confirmed slips land here, exactly as they are named below.
 ATTACHMENT_DIR = Path(os.getenv("ATTACHMENT_DIR", "/data/validated/slips"))
+TEMP_DIR = ATTACHMENT_DIR.with_name("slips_temp")  # uploaded, not confirmed yet
+HISTORY_DIR = ATTACHMENT_DIR.with_name("slips_history")  # kept for the backoffice
 MAX_FILE_SIZE = 10 * 1024 * 1024
 TOO_LARGE_ERROR = "ไฟล์มีขนาดเกิน 10 MB"
 
@@ -71,6 +79,10 @@ def _safe_name(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "_", name).strip(".") or "_"
 
 
+def _metadata(file_path: Path) -> Path:
+    return file_path.with_suffix(file_path.suffix + ".json")
+
+
 def save(
     *,
     content: bytes,
@@ -87,7 +99,7 @@ def save(
     mime_type = normalize_mime(mime_type)
     received_at = datetime.now(BANGKOK)
 
-    ATTACHMENT_DIR.mkdir(parents=True, exist_ok=True)
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
     if filename:
         extension = Path(filename).suffix.lower()
@@ -102,14 +114,12 @@ def save(
     )
 
     file_path = ATTACHMENT_DIR / stored_filename
-    file_path.write_bytes(content)
-
-    metadata_path = file_path.with_suffix(
-        file_path.suffix + ".json"
-    )
+    # The message id keeps two people's uploads for one invoice apart until they confirm.
+    temp_path = TEMP_DIR / f"{_safe_name(line_message_id)}_{stored_filename}"
+    temp_path.write_bytes(content)
 
     try:
-        metadata_path.write_text(
+        _metadata(temp_path).write_text(
             json.dumps(
                 {
                     "invoice_id": invoice_id,
@@ -131,13 +141,14 @@ def save(
             encoding="utf-8",
         )
     except Exception:
-        file_path.unlink(missing_ok=True)  # no slip without its metadata
+        temp_path.unlink(missing_ok=True)  # no slip without its metadata
         raise
 
     return {
         "invoice_no": invoice_id,
+        "temp_path": str(temp_path),
         "file_path": str(file_path),
-        "metadata_path": str(metadata_path),
+        "history_path": str(HISTORY_DIR / stored_filename),
         "mime_type": mime_type,
         "original_filename": filename,
         "file_size": len(content),
@@ -166,10 +177,43 @@ def save_copies(*, invoices: list[dict], customer_id: str, **upload) -> list[dic
     return saved
 
 
+def _from_temp(attachment: dict, folder: Path) -> list[tuple[Path, Path]]:
+    """(temp file, its place in folder) for the slip and its metadata."""
+    temp, target = Path(attachment["temp_path"]), folder / Path(attachment["file_path"]).name
+    return [(temp, target), (_metadata(temp), _metadata(target))]
+
+
+def archive(saved: list[dict]) -> None:
+    """Copy confirmed slips to the history. Raises before anything is recorded."""
+    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+
+    for attachment in saved:
+        for source, target in _from_temp(attachment, HISTORY_DIR):
+            shutil.copy2(source, target)
+
+
+def publish(saved: list[dict]) -> None:
+    """Hand recorded slips over. The send is already saved, so a failure is logged, not raised."""
+    ATTACHMENT_DIR.mkdir(parents=True, exist_ok=True)
+
+    for attachment in saved:
+        try:
+            for source, target in _from_temp(attachment, ATTACHMENT_DIR):
+                os.replace(source, target)  # same volume: appears whole, never half written
+        except OSError:
+            logger.exception("Slip not delivered to %s; copy is in %s", ATTACHMENT_DIR, attachment["history_path"])
+
+
 def delete(attachment: dict) -> None:
-    """Remove a saved file (and its metadata) that will never be sent."""
-    for path in (attachment["file_path"], attachment["metadata_path"]):
-        Path(path).unlink(missing_ok=True)
+    """Remove an upload that will never be sent."""
+    temp = Path(attachment["temp_path"])
+    for path in (temp, _metadata(temp)):
+        path.unlink(missing_ok=True)
+
+
+def clear_temp() -> None:
+    """At startup: sessions live in memory, so nothing in here belongs to anyone any more."""
+    shutil.rmtree(TEMP_DIR, ignore_errors=True)
 
 
 def format_file_size(size: int) -> str:

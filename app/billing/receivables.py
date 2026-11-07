@@ -1,21 +1,25 @@
 """Receivables and sales groups, read from the daily JSON exports.
 
-Loaded at import, and reloaded daily after the 18:00 export (start_daily_reload).
+Loaded at import and reloaded daily after the 18:00 export (schedule), or at once
+through refresh(). A load that fails keeps the data already loaded.
 """
 
+import asyncio
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from functools import cache
 from pathlib import Path
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from app.config import BANGKOK
 
 logger = logging.getLogger(__name__)
 
 DATA_DIR = Path("/data/validated/output")
 AR_FILE = DATA_DIR / "ar_outstanding_latest.json"
 GROUP_FILE = DATA_DIR / "group_latest.json"
+EXPORT_HOUR = 18
 
 
 def _read_json(path: Path):
@@ -109,17 +113,60 @@ def with_invoices(customer: dict, invoices: list[dict]) -> dict:
     }
 
 
-GROUPS_BY_EMP_CODE = load_groups()
-CUSTOMERS = load_customers()
+GROUPS_BY_EMP_CODE: dict[str, set[str]] = {}
+CUSTOMERS: list[dict] = []
+# When AR_FILE was written. Only a bill sent since then is unknown to the export:
+# anything sent earlier and still in the file is back to be sent (billing.repository).
+EXPORTED_AT = datetime.fromtimestamp(0, timezone.utc)
+_retry_needed = False
 
 
-def reload() -> None:
-    global GROUPS_BY_EMP_CODE, CUSTOMERS
+def _load(fresh_after: datetime | None = None) -> tuple[dict, list, datetime]:
+    """Read the exports; raises instead of returning anything unusable."""
+    # group_latest.json only changes when the groups do, so only the receivables file dates the export.
+    # Read before the contents: a file replaced meanwhile then errs towards hiding a bill, not resending it.
+    exported_at = datetime.fromtimestamp(AR_FILE.stat().st_mtime, timezone.utc)
 
-    GROUPS_BY_EMP_CODE = load_groups()
-    CUSTOMERS = load_customers()
+    if fresh_after and exported_at < fresh_after:
+        raise RuntimeError(f"{AR_FILE} is older than {fresh_after}")
+
+    groups, customers = load_groups(), load_customers()
+
+    if not groups or not customers:
+        raise RuntimeError("the export has no groups or no customers")
+
+    return groups, customers, exported_at
+
+
+def _apply(loaded: tuple[dict, list, datetime]) -> None:
+    global GROUPS_BY_EMP_CODE, CUSTOMERS, EXPORTED_AT
+
+    GROUPS_BY_EMP_CODE, CUSTOMERS, EXPORTED_AT = loaded
     customers_for.cache_clear()
     logger.info("Loaded %d customers, %d employees with groups", len(CUSTOMERS), len(GROUPS_BY_EMP_CODE))
+
+
+async def refresh(*, fresh_after: datetime | None = None) -> dict:
+    """Load the exports now. Raises, keeping what is loaded, when they are unusable."""
+    global _retry_needed
+
+    # Applied here on the event loop, so customers_for never sees it half done.
+    _apply(await asyncio.to_thread(_load, fresh_after))
+    _retry_needed = False
+    return {"customers": len(CUSTOMERS), "exported_at": EXPORTED_AT.isoformat()}
+
+
+async def _daily_reload(*, retry: bool = False) -> None:
+    global _retry_needed
+
+    if retry and not _retry_needed:
+        return
+
+    try:
+        await refresh(fresh_after=datetime.now(BANGKOK).replace(hour=EXPORT_HOUR, minute=0, second=0, microsecond=0))
+    except Exception:
+        _retry_needed = not retry
+        logger.exception("Daily receivables load failed; %s", "keeping the data until tomorrow" if retry else "retry at 19:00")
 
 
 @cache
@@ -144,13 +191,14 @@ def customers_for(emp_code: str) -> list[dict]:
     return sorted(customers, key=lambda customer: -customer["total_outstanding"])
 
 
-_scheduler = AsyncIOScheduler(timezone="Asia/Bangkok")
+def schedule(scheduler) -> None:
+    scheduler.add_job(_daily_reload, trigger="cron", hour=18, minute=30, id="reload_receivables")
+    scheduler.add_job(
+        _daily_reload, trigger="cron", hour=19, minute=0, id="retry_receivables", kwargs={"retry": True}
+    )
 
 
-def start_daily_reload() -> None:
-    _scheduler.add_job(reload, trigger="cron", hour=18, minute=30, id="reload_receivables", replace_existing=True)
-    _scheduler.start()
-
-
-def stop_daily_reload() -> None:
-    _scheduler.shutdown(wait=False)
+try:
+    _apply(_load())
+except Exception:  # the bot still serves registration and history; refresh() fills this in
+    logger.exception("No receivables loaded")

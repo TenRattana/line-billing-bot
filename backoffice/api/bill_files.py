@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
-from app.billing.attachments import ATTACHMENT_DIR
+from app.billing.attachments import HISTORY_DIR
 from app.db.models import BillSend
 from app.db.session import SessionLocal
 from backoffice.api.auth import current_admin
@@ -26,8 +26,8 @@ async def _files(send_id: int) -> list[dict]:
 
 
 def _safe_path(stored: str) -> Path | None:
-    """The file, only if it really sits inside the slip folder (the DB value is editable)."""
-    root = ATTACHMENT_DIR.resolve()
+    """The file, only if it really sits inside the slip history (the DB value is editable)."""
+    root = HISTORY_DIR.resolve()
     path = Path(stored).resolve()
     return path if path.is_relative_to(root) and path.is_file() else None
 
